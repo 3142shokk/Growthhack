@@ -1,7 +1,6 @@
-playwright==1.44.0
+playwright>=1.44.0
 nested-lookup==0.2.25
 jmespath==1.0.1
-pandas==2.2.2
-matplotlib==3.9.0
-plotly==5.22.0
-pydantic==2.7.1
+pandas>=2.2.2
+pydantic>=2.7.1
+ddgs>=9.0.0
