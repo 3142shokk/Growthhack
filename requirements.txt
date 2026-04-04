@@ -1,4 +1,5 @@
 playwright>=1.44.0
+yt-dlp>=2024.1.1
 nested-lookup==0.2.25
 jmespath==1.0.1
 pandas>=2.2.2

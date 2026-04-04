@@ -12,6 +12,7 @@ python main.py --workers google_trends  # Google Trends only
 
 import argparse
 import logging
+import os
 from datetime import datetime
 
 import config
@@ -88,6 +89,34 @@ def run_hackernews(args) -> None:
     print(f"{'='*50}\n")
 
 
+def run_youtube(args) -> None:
+    from workers.youtube_worker import YouTubeWorker
+
+    logger.info("Starting YouTube scraper")
+    worker = YouTubeWorker()
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs(config.RAW_DIR, exist_ok=True)
+    raw_path = os.path.join(config.RAW_DIR, f"youtube_{ts}.json")
+
+    videos = worker.scrape(raw_path=raw_path)
+    if not videos:
+        logger.warning("No YouTube data collected.")
+        return
+
+    export_csv(videos,  f"{config.PROCESSED_DIR}/youtube_videos_{ts}.csv")
+    export_json(videos, f"{config.PROCESSED_DIR}/youtube_videos_{ts}.json")
+
+    print(f"\n{'='*50}")
+    print(f"YouTube: {len(videos)} videos")
+    top = sorted(videos, key=lambda p: p.views or 0, reverse=True)[:5]
+    print("\nTop 5 videos by views:")
+    for i, p in enumerate(top, 1):
+        print(f"  {i}. {p.views:,} views | {p.likes:,} likes | {p.comments} cmts")
+        print(f"     {p.post_title[:100]!r}")
+    print(f"{'='*50}\n")
+
+
 def run_google_trends(args) -> None:
     from workers.google_trends_worker import GoogleTrendsWorker
 
@@ -104,25 +133,33 @@ def run_google_trends(args) -> None:
     export_csv(posts, f"{config.PROCESSED_DIR}/google_trends_{ts}.csv")
     export_json(posts, f"{config.PROCESSED_DIR}/google_trends_{ts}.json")
 
+    trend     = [p for p in posts if p.post_title.startswith("[Trend]")]
+    region    = [p for p in posts if p.post_title.startswith("[Region]")]
+    r_query   = [p for p in posts if "query]" in p.post_title]
+    r_topic   = [p for p in posts if "topic]" in p.post_title]
+
     print(f"\n{'='*50}")
-    print(f"Google Trends: {len(posts)} data points collected")
-    interest = [p for p in posts if p.post_title.startswith("[Trend]") and p.trend_score is not None]
-    if interest:
-        seen = set()
-        print("\nPeak interest scores (last 90 days, 0-100):")
-        for p in sorted(interest, key=lambda x: x.trend_score or 0, reverse=True):
-            kw = p.post_title[8:]
+    print(f"Google Trends: {len(posts)} data points (2024-01-01 → today)")
+    print(f"  Interest over time : {len(trend)} weekly data points")
+    print(f"  Interest by region : {len(region)} country records")
+    print(f"  Related queries    : {len(r_query)} entries")
+    print(f"  Related topics     : {len(r_topic)} entries")
+    if trend:
+        print("\nPeak weekly scores (0-100):")
+        seen: set[str] = set()
+        for p in sorted(trend, key=lambda x: x.trend_score or 0, reverse=True):
+            kw = p.post_title.split("] ", 1)[-1]
             if kw not in seen:
                 seen.add(kw)
-                print(f"  {kw}: {p.trend_score}")
+                print(f"  {kw}: {p.trend_score}  ({p.published_at.date() if p.published_at else '?'})")
     print(f"{'='*50}\n")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Claude Growth Machine Scraper")
     parser.add_argument(
-        "--workers", nargs="+", choices=["reddit", "google_trends", "hacker_news"],
-        default=["reddit", "google_trends", "hacker_news"],
+        "--workers", nargs="+", choices=["reddit", "google_trends", "hacker_news", "youtube"],
+        default=["reddit", "google_trends", "hacker_news", "youtube"],
         help="Which workers to run (default: all)",
     )
     args = parser.parse_args()
@@ -144,6 +181,12 @@ def main():
             run_hackernews(args)
         except ImportError:
             logger.warning("Hacker News worker not available, skipping.")
+
+    if "youtube" in args.workers:
+        try:
+            run_youtube(args)
+        except ImportError:
+            logger.warning("YouTube worker not available, skipping.")
 
 
 if __name__ == "__main__":
