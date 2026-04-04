@@ -1,29 +1,28 @@
 """
-Threads scraper — DOM-based extraction using Playwright.
+Threads scraper — two-mode DOM-based extraction using Playwright.
+
+Modes
+-----
+1. DISCOVER mode (default for Claude-mentions)
+   - Searches DuckDuckGo for site:threads.net + Claude keywords
+   - Extracts Threads post URLs from search results
+   - Scrapes each individual post page → gets views + full engagement
+   - Finds posts from *anyone*, not just curated accounts
+
+2. PROFILE mode
+   - Scrapes a curated list of AI/tech accounts
+   - Paginates through their recent posts
+   - Optionally filters by Claude keywords
 
 Why DOM, not embedded JSON
 --------------------------
-The scrapfly guide describes extracting data from <script data-sjs> blobs,
-but as of 2026 Threads no longer embeds post data there (blobs only contain
-React module definitions). Posts are rendered client-side and are accessible
-in the DOM after JavaScript executes.
+As of 2026, Threads no longer embeds post data in <script data-sjs> blobs
+(they only contain React module definitions). Posts are rendered client-side
+and are only accessible in the DOM after JavaScript executes.
 
-Strategy
----------
-1. Load each target profile page with Playwright (headless Chromium).
-2. Wait for <time datetime="..."> elements — their presence means posts rendered.
-3. For each unique post link (href contains /post/), extract:
-   - Post code + URL from href
-   - ISO timestamp from <time datetime> attribute
-   - Post text from the rendered container text
-   - Engagement counts (likes, replies, reposts) parsed from numeric tokens
-4. Filter results by Claude-related keywords (optional).
-
-Limitations
------------
-- Private accounts (e.g. @anthropic on Threads) return no posts — logged.
-- Keyword search requires login → we target known AI/tech accounts instead.
-- Engagement number order in the DOM: likes, replies, reposts, quotes (Threads UI order).
+Individual post pages (/post/CODE) also expose view counts, which profile
+pages do not — so discovering URLs via DDG + scraping individually is the
+best way to get complete data.
 """
 
 from __future__ import annotations
@@ -33,7 +32,9 @@ import re
 import time
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import urlparse
 
+from ddgs import DDGS
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
@@ -43,8 +44,14 @@ from workers.base import BaseWorker
 
 logger = logging.getLogger(__name__)
 
-# Engagement numbers appear in this order in the Threads DOM
-_ENGAGEMENT_ORDER = ["likes", "replies", "reposts", "quotes"]
+# DDG search queries for Claude-related Threads posts
+_SEARCH_QUERIES = [
+    'site:threads.net "claude ai"',
+    'site:threads.net "claude anthropic"',
+    'site:threads.net "claude code"',
+    'site:threads.net "claude opus" OR "claude sonnet"',
+    'site:threads.net "anthropic" claude',
+]
 
 
 class ThreadsWorker(BaseWorker):
@@ -55,12 +62,16 @@ class ThreadsWorker(BaseWorker):
         usernames: list[str] | None = None,
         max_posts_per_user: int = config.THREADS_MAX_POSTS_PER_USER,
         filter_keywords: list[str] | None = None,
+        mode: str = "discover",          # "discover" | "profile" | "both"
+        max_discover: int = 60,          # max posts to discover via DDG
     ):
         self.usernames = usernames or config.THREADS_TARGET_ACCOUNTS
         self.max_posts_per_user = max_posts_per_user
         self.filter_keywords = (
             [k.lower() for k in filter_keywords] if filter_keywords else None
         )
+        self.mode = mode
+        self.max_discover = max_discover
 
     # ------------------------------------------------------------------
     # Public interface
@@ -80,22 +91,210 @@ class ThreadsWorker(BaseWorker):
                 locale="en-US",
             )
 
-            for username in self.usernames:
-                try:
-                    posts = self._scrape_profile(ctx, username)
-                    all_posts.extend(posts)
-                    logger.info(f"[threads] @{username}: {len(posts)} posts")
-                except Exception as exc:
-                    logger.error(f"[threads] @{username} failed: {exc}")
-                time.sleep(config.REQUEST_DELAY_SECONDS)
+            if self.mode in ("discover", "both"):
+                discovered = self._discover_and_scrape(ctx)
+                all_posts.extend(discovered)
+                logger.info(f"[threads] discover mode: {len(discovered)} posts")
+
+            if self.mode in ("profile", "both"):
+                for username in self.usernames:
+                    try:
+                        posts = self._scrape_profile(ctx, username)
+                        all_posts.extend(posts)
+                        logger.info(f"[threads] @{username}: {len(posts)} posts")
+                    except Exception as exc:
+                        logger.error(f"[threads] @{username} failed: {exc}")
+                    time.sleep(config.REQUEST_DELAY_SECONDS)
 
             browser.close()
 
-        logger.info(f"[threads] Total: {len(all_posts)} posts from {len(self.usernames)} accounts")
-        return all_posts
+        # Deduplicate by post ID
+        seen: set[str] = set()
+        unique = []
+        for p in all_posts:
+            if p.id not in seen:
+                seen.add(p.id)
+                unique.append(p)
+
+        logger.info(f"[threads] Total unique posts: {len(unique)}")
+        return unique
 
     # ------------------------------------------------------------------
-    # Per-profile scraping
+    # Discover mode — DDG search → individual post scraping
+    # ------------------------------------------------------------------
+
+    def _discover_and_scrape(self, ctx) -> list[Post]:
+        urls = self._find_post_urls()
+        logger.info(f"[threads] DDG discovered {len(urls)} unique post URLs")
+
+        posts: list[Post] = []
+        total = min(len(urls), self.max_discover)
+        for i, url in enumerate(urls[:total], 1):
+            try:
+                logger.info(f"[threads] [{i}/{total}] scraping {url}")
+                post = self._scrape_single_post(ctx, url)
+                if post and self._passes_filter(post):
+                    posts.append(post)
+                    logger.info(f"[threads]   ✓ collected — likes={post.likes} views={post.views} author=@{post.author}")
+                else:
+                    logger.debug(f"[threads]   ✗ skipped (filtered or empty)")
+                time.sleep(1.5)
+            except Exception as exc:
+                logger.debug(f"[threads] Failed to scrape {url}: {exc}")
+        return posts
+
+    def _find_post_urls(self) -> list[str]:
+        """Use DuckDuckGo to discover public Threads post URLs mentioning Claude."""
+        seen: set[str] = set()
+        urls: list[str] = []
+
+        for query in _SEARCH_QUERIES:
+            try:
+                # backend="lite" uses DDG's lightweight HTML endpoint — much faster,
+                # avoids the ~14min Google timeout that the default multi-backend mode hits
+                results = list(DDGS().text(query, max_results=20, backend="lite"))
+                for r in results:
+                    href = r.get("href", "")
+                    # Only keep direct post URLs (not profile or search pages)
+                    if "/post/" in href:
+                        # Normalize — strip trailing slug text after post code
+                        match = re.search(r"(https://www\.threads\.net/@[^/]+/post/[A-Za-z0-9_-]+)", href)
+                        if match:
+                            clean = match.group(1)
+                            if clean not in seen:
+                                seen.add(clean)
+                                urls.append(clean)
+                time.sleep(1.5)  # polite DDG rate limit
+            except Exception as exc:
+                logger.warning(f"[threads] DDG search failed for '{query}': {exc}")
+
+        return urls
+
+    def _scrape_single_post(self, ctx, url: str) -> Optional[Post]:
+        """Scrape an individual Threads post page."""
+        page = ctx.new_page()
+        try:
+            page.goto(url, timeout=config.PLAYWRIGHT_TIMEOUT_MS)
+            page.wait_for_load_state("domcontentloaded")
+            time.sleep(3)  # let React render the post
+
+            body_text = page.evaluate("document.body.innerText")
+            if "log in" in body_text.lower()[:100]:
+                return None
+
+            # Extract post code and username from URL
+            url_match = re.search(r"/@([^/]+)/post/([A-Za-z0-9_-]+)", url)
+            if not url_match:
+                return None
+            username, code = url_match.group(1), url_match.group(2)
+
+            # View count appears as "X views" or "X.XK views" at the top
+            views = None
+            view_match = re.search(r"([\d,.]+[KMk]?)\s+views", body_text)
+            if view_match:
+                views = self._parse_number(view_match.group(1))
+
+            # Get time element for published_at
+            time_el = page.query_selector("time[datetime]")
+            published_at = None
+            if time_el:
+                dt_str = time_el.get_attribute("datetime") or ""
+                try:
+                    published_at = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                except ValueError:
+                    pass
+
+            # Extract post text and engagement from the container
+            container_text = body_text.split("\n")
+            text, likes, replies, reposts = self._parse_post_page_text(
+                container_text, username
+            )
+
+            hashtags = re.findall(r"#(\w+)", text)
+
+            return Post(
+                id=f"threads_{code}",
+                platform="threads",
+                post_title=text,
+                author=username,
+                url=url,
+                views=views,
+                likes=likes,
+                reposts=reposts,
+                comments=replies,
+                hashtags=hashtags,
+                published_at=published_at,
+                scraped_at=datetime.now(tz=timezone.utc),
+                raw_data={"code": code, "url": url},
+            )
+        except PlaywrightTimeout:
+            logger.warning(f"[threads] Timeout on {url}")
+            return None
+        finally:
+            page.close()
+
+    def _parse_post_page_text(
+        self, lines: list[str], username: str
+    ) -> tuple[str, Optional[int], Optional[int], Optional[int]]:
+        """
+        Individual post page body (innerText) looks like:
+            Thread
+            150K views
+            mengto
+            11/28/24
+            Post text here... (may be multi-line)
+            1.8K   ← likes
+            106    ← replies
+            137    ← reposts
+            390    ← quotes
+            mengto        ← replies section starts here (ignore rest)
+            11/28/24
+            · Author
+            Reply text...
+        We find the engagement block by scanning for the first run of
+        3+ consecutive pure-number lines after the header.
+        """
+        clean = [l.strip() for l in lines if l.strip()]
+        num_pat = re.compile(r"^[\d,.]+[KMk]?$")
+        date_pat = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$")
+        skip = {"thread", "threads", "home"}
+        views_pat = re.compile(r"^[\d,.]+[KMk]?\s+views$", re.I)
+
+        # Skip header lines
+        start = 0
+        for i, line in enumerate(clean[:8]):
+            if (
+                line.lower() in skip
+                or line.lower() == username.lower()
+                or date_pat.match(line)
+                or views_pat.match(line)
+            ):
+                start = i + 1
+
+        # Scan forward to find the engagement number block (3-4 consecutive numbers)
+        text_end = len(clean)
+        numbers: list[int] = []
+        for i in range(start, len(clean)):
+            if num_pat.match(clean[i]):
+                # Check if this starts a run of at least 2 numbers
+                run = []
+                j = i
+                while j < len(clean) and num_pat.match(clean[j]):
+                    run.append(self._parse_number(clean[j]))
+                    j += 1
+                if len(run) >= 2:
+                    numbers = run
+                    text_end = i
+                    break
+
+        text = " ".join(clean[start:text_end]).strip()
+        likes   = numbers[0] if len(numbers) > 0 else None
+        replies = numbers[1] if len(numbers) > 1 else None
+        reposts = numbers[2] if len(numbers) > 2 else None
+        return text, likes, replies, reposts
+
+    # ------------------------------------------------------------------
+    # Profile mode (unchanged from v1)
     # ------------------------------------------------------------------
 
     def _scrape_profile(self, ctx, username: str) -> list[Post]:
@@ -104,21 +303,18 @@ class ThreadsWorker(BaseWorker):
         try:
             page.goto(url, timeout=config.PLAYWRIGHT_TIMEOUT_MS)
             page.wait_for_load_state("networkidle", timeout=20000)
-            time.sleep(2)  # let React finish rendering
+            time.sleep(2)
 
-            # Check if account is private / login-gated
             body_text = page.evaluate("document.body.innerText")
             if "private" in body_text.lower() or "log in" in body_text.lower()[:200]:
-                logger.warning(f"[threads] @{username} is private or requires login — skipping")
+                logger.warning(f"[threads] @{username} is private or gated — skipping")
                 return []
 
-            # Scroll to load more posts
             for _ in range(2):
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 time.sleep(1.5)
 
-            posts = self._extract_posts(page, username)
-            return posts[: self.max_posts_per_user]
+            return self._extract_posts_from_profile(page, username)[: self.max_posts_per_user]
 
         except PlaywrightTimeout:
             logger.warning(f"[threads] Timeout loading @{username}")
@@ -126,15 +322,9 @@ class ThreadsWorker(BaseWorker):
         finally:
             page.close()
 
-    # ------------------------------------------------------------------
-    # DOM extraction
-    # ------------------------------------------------------------------
-
-    def _extract_posts(self, page, username: str) -> list[Post]:
-        """Pull post data from rendered DOM elements."""
-        # Collect unique post codes (deduplicate /post/CODE and /post/CODE/media)
+    def _extract_posts_from_profile(self, page, username: str) -> list[Post]:
         links = page.query_selector_all("a[href*='/post/']")
-        seen_codes: dict[str, str] = {}  # code -> full href
+        seen_codes: dict[str, str] = {}
         for link in links:
             href = link.get_attribute("href") or ""
             match = re.search(r"/post/([A-Za-z0-9_-]+)", href)
@@ -143,36 +333,22 @@ class ThreadsWorker(BaseWorker):
                 if code not in seen_codes:
                     seen_codes[code] = href
 
-        # Map datetime elements by position (they align with post links)
         time_els = page.query_selector_all("time[datetime]")
-        datetimes: list[str] = [
-            t.get_attribute("datetime") or "" for t in time_els
-        ]
+        datetimes = [t.get_attribute("datetime") or "" for t in time_els]
 
         posts: list[Post] = []
         for idx, (code, href) in enumerate(seen_codes.items()):
-            post = self._extract_single(page, username, code, href, datetimes, idx)
+            post = self._extract_profile_post(page, username, code, href, datetimes, idx)
             if post and self._passes_filter(post):
                 posts.append(post)
-
         return posts
 
-    def _extract_single(
-        self,
-        page,
-        username: str,
-        code: str,
-        href: str,
-        datetimes: list[str],
-        idx: int,
-    ) -> Optional[Post]:
+    def _extract_profile_post(self, page, username, code, href, datetimes, idx) -> Optional[Post]:
         try:
-            # Find the post link element and walk up to get container text
             link_el = page.query_selector(f'a[href="{href}"]')
             if not link_el:
                 return None
 
-            # Walk up the DOM to find a container with enough text
             container_text: str = page.evaluate(
                 """el => {
                     let node = el;
@@ -187,17 +363,12 @@ class ThreadsWorker(BaseWorker):
                 link_el,
             )
 
-            text, likes, replies, reposts = self._parse_container_text(
-                container_text, username
-            )
+            text, likes, replies, reposts = self._parse_container_text(container_text, username)
 
-            # Get datetime from the aligned time element
-            published_at: Optional[datetime] = None
+            published_at = None
             if idx < len(datetimes) and datetimes[idx]:
                 try:
-                    published_at = datetime.fromisoformat(
-                        datetimes[idx].replace("Z", "+00:00")
-                    )
+                    published_at = datetime.fromisoformat(datetimes[idx].replace("Z", "+00:00"))
                 except ValueError:
                     pass
 
@@ -219,32 +390,15 @@ class ThreadsWorker(BaseWorker):
                 raw_data={"code": code, "container_text": container_text},
             )
         except Exception as exc:
-            logger.debug(f"[threads] Failed to parse post {code}: {exc}")
+            logger.debug(f"[threads] Failed to parse profile post {code}: {exc}")
             return None
 
     # ------------------------------------------------------------------
-    # Text parsing
+    # Shared helpers
     # ------------------------------------------------------------------
 
-    def _parse_container_text(
-        self, raw: str, username: str
-    ) -> tuple[str, Optional[int], Optional[int], Optional[int]]:
-        """
-        Container innerText typically looks like:
-            username
-            MM/DD/YY
-            Post text here... possibly multi-line
-            hashtag1 hashtag2
-            195          ← likes
-            27           ← replies
-            7            ← reposts
-            1            ← quotes
-
-        We strip the username/date header and trailing numbers.
-        """
+    def _parse_container_text(self, raw: str, username: str) -> tuple[str, Optional[int], Optional[int], Optional[int]]:
         lines = [l.strip() for l in raw.split("\n") if l.strip()]
-
-        # Drop leading username lines and date lines
         date_pattern = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$")
         start = 0
         for i, line in enumerate(lines):
@@ -253,7 +407,6 @@ class ThreadsWorker(BaseWorker):
             elif i > 3:
                 break
 
-        # Collect trailing pure-number lines (engagement counts)
         numbers: list[int] = []
         end = len(lines)
         for line in reversed(lines):
@@ -263,23 +416,18 @@ class ThreadsWorker(BaseWorker):
             else:
                 break
 
-        # Remaining lines = post text
         text = " ".join(lines[start:end]).strip()
-
-        # Assign engagement values in Threads DOM order
-        likes = numbers[0] if len(numbers) > 0 else None
+        likes   = numbers[0] if len(numbers) > 0 else None
         replies = numbers[1] if len(numbers) > 1 else None
         reposts = numbers[2] if len(numbers) > 2 else None
-
         return text, likes, replies, reposts
 
     @staticmethod
     def _parse_number(s: str) -> int:
-        """Parse '1.2K' → 1200, '4.5M' → 4500000, '195' → 195."""
         s = s.replace(",", "").strip()
-        if s.endswith("K") or s.endswith("k"):
+        if s.upper().endswith("K"):
             return int(float(s[:-1]) * 1_000)
-        if s.endswith("M") or s.endswith("m"):
+        if s.upper().endswith("M"):
             return int(float(s[:-1]) * 1_000_000)
         try:
             return int(s)

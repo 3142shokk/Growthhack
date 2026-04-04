@@ -42,8 +42,9 @@ def run_threads(args) -> None:
     accounts = args.accounts or config.THREADS_TARGET_ACCOUNTS
     keywords = None if args.no_filter else config.CLAUDE_KEYWORDS
 
-    logger.info(f"Starting Threads scraper — {len(accounts)} accounts, filter={'off' if keywords is None else 'on'}")
-    worker = ThreadsWorker(usernames=accounts, filter_keywords=keywords)
+    mode = "profile" if args.profile_only else ("discover" if args.discover_only else "both")
+    logger.info(f"Starting Threads scraper — mode={mode}, filter={'off' if keywords is None else 'on'}")
+    worker = ThreadsWorker(usernames=accounts, filter_keywords=keywords, mode=mode, max_discover=args.max_discover)
     posts = worker.scrape()
 
     if not posts:
@@ -115,6 +116,22 @@ def main():
         "--no-filter",
         action="store_true",
         help="Threads: collect all posts, not just Claude-keyword matches",
+    )
+    parser.add_argument(
+        "--discover-only",
+        action="store_true",
+        help="Threads: only use DDG discovery (posts mentioning Claude from anyone)",
+    )
+    parser.add_argument(
+        "--profile-only",
+        action="store_true",
+        help="Threads: only scrape curated profile list",
+    )
+    parser.add_argument(
+        "--max-discover",
+        type=int,
+        default=60,
+        help="Threads: max posts to scrape in discover mode (default: 60)",
     )
     args = parser.parse_args()
 

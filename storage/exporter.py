@@ -15,7 +15,7 @@ def export_csv(posts: list[Post], path: str) -> None:
         writer = csv.DictWriter(f, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
-    print(f"Exported {len(posts)} posts → {path}")
+    print(f"Exported {len(posts)} posts -> {path}")
 
 
 def export_json(posts: list[Post], path: str) -> None:
@@ -25,7 +25,7 @@ def export_json(posts: list[Post], path: str) -> None:
     data = [p.model_dump(mode="json") for p in posts]
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, default=str)
-    print(f"Exported {len(posts)} posts → {path}")
+    print(f"Exported {len(posts)} posts -> {path}")
 
 
 def export_raw(raw: list[dict], platform: str, raw_dir: str) -> None:
@@ -34,4 +34,4 @@ def export_raw(raw: list[dict], platform: str, raw_dir: str) -> None:
     path = os.path.join(raw_dir, f"{platform}_{ts}.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(raw, f, indent=2, default=str)
-    print(f"Raw data saved → {path}")
+    print(f"Raw data saved -> {path}")
