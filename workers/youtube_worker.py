@@ -85,65 +85,50 @@ class YouTubeWorker(BaseWorker):
     # ------------------------------------------------------------------
 
     def scrape(self, raw_path: str | None = None) -> list[Post]:
-        # 1. Collect unique video IDs
         seen: set[str] = set()
-        video_ids: list[str] = []
-
-        def _add(ids: list[str], label: str) -> None:
-            added = 0
-            for vid_id in ids:
-                if vid_id not in seen:
-                    seen.add(vid_id)
-                    video_ids.append(vid_id)
-                    added += 1
-            logger.info(f"[yt] {label} → +{added} new (total: {len(video_ids)})")
-
-        for query in self.queries:
-            _add(self._search_relevance(query), f"relevance '{query}'")
-        for query in self.queries:
-            _add(self._search_by_date(query), f"date '{query}'")
-        for ch_url in self.channel_urls:
-            _add(self._scrape_channel(ch_url), ch_url)
-
-        logger.info(f"[yt] Unique videos to process: {len(video_ids)} using {WORKERS} threads")
-
-        # 2. Open raw file at the start — grow it with each result
-        raw_file = None
-        first_entry = True
-        if raw_path:
-            os.makedirs(os.path.dirname(raw_path), exist_ok=True)
-            raw_file = open(raw_path, "w", encoding="utf-8")
-            raw_file.write("[\n")
-            logger.info(f"[yt] Streaming raw data → {raw_path}")
-
         videos: list[Post] = []
         done = 0
 
+        raw_file = None
+        if raw_path:
+            os.makedirs(os.path.dirname(raw_path), exist_ok=True)
+            raw_file = open(raw_path, "w", encoding="utf-8")
+            logger.info(f"[yt] Streaming raw data (NDJSON) → {raw_path}")
+
+        def _process_batch(ids: list[str], label: str, pool: ThreadPoolExecutor) -> None:
+            nonlocal done
+            new_ids = []
+            for vid_id in ids:
+                if vid_id not in seen:
+                    seen.add(vid_id)
+                    new_ids.append(vid_id)
+            logger.info(f"[yt] {label} → +{len(new_ids)} new (total seen: {len(seen)})")
+            futures = {pool.submit(self._fetch_video, vid_id): vid_id for vid_id in new_ids}
+            for future in as_completed(futures):
+                done += 1
+                try:
+                    v = future.result()
+                except Exception as e:
+                    logger.debug(f"[yt] future error: {e}")
+                    continue
+                if v:
+                    videos.append(v)
+                    if raw_file and v.raw_data:
+                        raw_file.write(json.dumps(v.raw_data, ensure_ascii=False, default=str) + "\n")
+                        raw_file.flush()
+                if done % 100 == 0:
+                    logger.info(f"[yt] {done} processed — {len(videos)} videos saved")
+
         try:
             with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-                futures = {pool.submit(self._fetch_video, vid_id): vid_id for vid_id in video_ids}
-                for future in as_completed(futures):
-                    done += 1
-                    try:
-                        v = future.result()
-                    except Exception as e:
-                        logger.debug(f"[yt] future error: {e}")
-                        continue
-
-                    if v:
-                        videos.append(v)
-                        if raw_file and v.raw_data:
-                            if not first_entry:
-                                raw_file.write(",\n")
-                            json.dump(v.raw_data, raw_file, ensure_ascii=False, default=str)
-                            raw_file.flush()
-                            first_entry = False
-
-                    if done % 100 == 0:
-                        logger.info(f"[yt] {done}/{len(video_ids)} processed — {len(videos)} videos saved")
+                for query in self.queries:
+                    _process_batch(self._search_relevance(query), f"relevance '{query}'", pool)
+                for query in self.queries:
+                    _process_batch(self._search_by_date(query), f"date '{query}'", pool)
+                for ch_url in self.channel_urls:
+                    _process_batch(self._scrape_channel(ch_url), ch_url, pool)
         finally:
             if raw_file:
-                raw_file.write("\n]")
                 raw_file.close()
                 logger.info(f"[yt] Raw file finalised: {raw_path}")
 
@@ -195,8 +180,8 @@ class YouTubeWorker(BaseWorker):
             "no_warnings": True,
             "skip_download": True,
         }
-        # Try with Chrome cookies first (bypass bot detection), then without
-        for extra in ({"cookiesfrombrowser": ("chrome",)}, {}):
+        # No cookies — avoids macOS keychain prompts
+        for extra in ({},):
             try:
                 with yt_dlp.YoutubeDL({**base_opts, **extra}) as ydl:
                     info = ydl.extract_info(url, download=False)

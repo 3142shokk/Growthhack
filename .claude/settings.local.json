@@ -1,12 +1,41 @@
 {
   "permissions": {
     "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)",
+      "Bash(git rm:*)",
+      "Bash(git push:*)",
+      "WebFetch(domain:scrapfly.io)",
       "Bash(pip install:*)",
-      "Bash(python -c ':*)",
-      "Bash(curl -s \"https://arctic-shift.photon-reddit.com/api/posts/search?subreddit=python&limit=1\")",
+      "Bash(python3 -m venv .venv)",
+      "Bash(.venv/bin/pip install:*)",
+      "Bash(.venv/bin/playwright install:*)",
+      "Bash(.venv/bin/pip show:*)",
+      "Bash(.venv/bin/python -m playwright install chromium)",
+      "Bash(.venv/bin/python main.py --workers threads --accounts anthropic --no-filter)",
+      "Bash(.venv/bin/python -c ':*)",
+      "Bash(.venv/bin/python main.py --workers threads --accounts karpathy garrytan --no-filter)",
+      "Bash(.venv/bin/python main.py --workers threads --accounts karpathy garrytan benedictevans)",
+      "Bash(.venv/bin/python main.py --workers threads --discover-only)",
+      "Bash(pkill -f \"python main.py\")",
+      "Bash(.venv/bin/python main.py --workers threads --discover-only --max-discover 20)",
+      "Bash(.venv/bin/python main.py --workers threads --max-discover 30)",
       "WebSearch",
-      "Bash(curl -s \"https://arctic-shift.photon-reddit.com/api/posts/search?subreddit=python&limit=auto&sort=asc&after=2024-01-01&before=2024-01-02&fields=id,created_utc,title\")",
-      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('num returned:', len\\(d.get\\('data',[]\\)\\)\\); print\\('last created_utc:', d['data'][-1]['created_utc'] if d.get\\('data'\\) else 'none'\\)\")"
+      "WebFetch(domain:github.com)",
+      "Bash(.venv/bin/python main.py --workers threads)",
+      "Bash(python:*)",
+      "Bash(python3 -c \"import json,sys; data=json.load\\(sys.stdin\\); [print\\(json.dumps\\(d, indent=2, default=str\\)\\) for d in data[:5]]\")",
+      "Bash(python3 -c \"import json,sys; data=json.load\\(sys.stdin\\); rising=[d for d in data if '[Rising]' in d['post_title']]; [print\\(json.dumps\\(d, indent=2, default=str\\)\\) for d in rising[:5]]\")",
+      "Bash(python3:*)",
+      "Bash(git pull:*)",
+      "Bash(git checkout:*)",
+      "Bash(wc:*)",
+      "Bash(pip show:*)",
+      "Bash(.venv/bin/python:*)",
+      "Bash(npm --version)",
+      "Bash(npx create-next-app@latest dashboard --typescript --tailwind --eslint --app --no-src-dir --import-alias \"@/*\")",
+      "Bash(npm run:*)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3333)"
     ]
   }
 }
