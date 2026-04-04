@@ -50,19 +50,16 @@ class RedditWorker(BaseWorker):
     def __init__(
         self,
         subreddits: list[str] | None = None,
-        search_queries: list[str] | None = None,
-        max_posts_per_query: int = 200,
-        sort: str = "relevance",
-        time_filter: str = "month",
+        max_posts_per_listing: int = 200,
+        time_filter: str = "year",
         filter_keywords: list[str] | None = None,
     ):
         self.subreddits = subreddits or config.REDDIT_SUBREDDITS
-        self.search_queries = search_queries or config.REDDIT_SEARCH_QUERIES
-        self.max_posts_per_query = max_posts_per_query
-        self.sort = sort
+        self.max_posts_per_query = max_posts_per_listing
         self.time_filter = time_filter
         self.filter_keywords = (
-            [k.lower() for k in filter_keywords] if filter_keywords else None
+            [k.lower() for k in filter_keywords] if filter_keywords
+            else [k.lower() for k in config.CLAUDE_KEYWORDS]
         )
         self._session = requests.Session()
         self._session.headers.update(_HEADERS)
@@ -75,33 +72,15 @@ class RedditWorker(BaseWorker):
         all_posts: list[Post] = []
         seen_ids: set[str] = set()
 
-        # 1. Site-wide search for each query
-        for query in self.search_queries:
-            posts = self._search_site(query)
-            for p in posts:
-                if p.id not in seen_ids:
-                    seen_ids.add(p.id)
-                    all_posts.append(p)
-            logger.info(f"[reddit] site search '{query}': {len(posts)} posts")
-
-        # 2. Per-subreddit search
         for sub in self.subreddits:
-            for query in self.search_queries:
-                posts = self._search_subreddit(sub, query)
+            for sort in ("top", "hot", "new"):
+                params = {"t": self.time_filter} if sort == "top" else {}
+                posts = self._fetch_listing(f"/r/{sub}/{sort}.json", params=params)
                 for p in posts:
-                    if p.id not in seen_ids:
+                    if p.id not in seen_ids and self._passes_filter(p):
                         seen_ids.add(p.id)
                         all_posts.append(p)
-                logger.info(f"[reddit] r/{sub} search '{query}': {len(posts)} posts")
-
-        # 3. Hot/top posts from target subreddits (catches posts without exact keyword match)
-        for sub in self.subreddits:
-            posts = self._fetch_listing(f"/r/{sub}/top.json", params={"t": self.time_filter})
-            for p in posts:
-                if p.id not in seen_ids and self._passes_filter(p):
-                    seen_ids.add(p.id)
-                    all_posts.append(p)
-            logger.info(f"[reddit] r/{sub} top: {len(posts)} posts")
+            logger.info(f"[reddit] r/{sub}: {len([p for p in all_posts if sub in p.hashtags])} posts")
 
         logger.info(f"[reddit] Total: {len(all_posts)} unique posts")
         return all_posts
