@@ -1,7 +1,7 @@
 import os
 
 # ---------------------------------------------------------------------------
-# Threads — target accounts (search requires login, so we target known accounts)
+# Threads — hashtag-based scraping
 # ---------------------------------------------------------------------------
 THREADS_HASHTAGS = [
     "claudeai",
@@ -31,15 +31,67 @@ CLAUDE_KEYWORDS = [
 COMPETITOR_KEYWORDS = ["chatgpt", "gemini", "copilot", "llama", "gpt-4", "openai"]
 
 # ---------------------------------------------------------------------------
-# Reddit — public JSON API (no auth required)
+# Reddit — Arctic Shift API (no auth required)
 # ---------------------------------------------------------------------------
 REDDIT_SUBREDDITS = [
-    "ClaudeAI",       # Dedicated Claude subreddit
-    "Anthropic",      # Anthropic company subreddit
+    "ClaudeAI",
+    "anthropic",
 ]
 
-REDDIT_REQUEST_DELAY = 1.5   # seconds between paginated requests
-REDDIT_MAX_RETRIES = 3
+REDDIT_SEARCH_QUERIES = [
+    "Claude",
+    "Anthropic",
+    "Claude AI",
+    "Claude Anthropic",
+    "Claude Opus",
+    "Claude Sonnet",
+    "Claude Haiku",
+    "Claude Code",
+    "Claude 3",
+    "Claude 3.5",
+    "Claude 4",
+    "claude.ai",
+    "Anthropic Claude",
+    "Anthropic AI",
+    "Claude artifacts",
+    "Claude projects",
+    "Claude API",
+]
+
+REDDIT_SAVE_EVERY = 500          # save progress every N new posts
+
+# ---------------------------------------------------------------------------
+# X (Twitter) — DuckDuckGo discovery + syndication API (no auth)
+# ---------------------------------------------------------------------------
+X_SEARCH_QUERIES = [
+    "Claude AI",
+    "Claude Anthropic",
+    "Claude Code",
+    "Claude Opus",
+    "Claude Sonnet",
+    "Claude Haiku",
+    "Claude 3",
+    "Claude 3.5",
+    "Claude 4",
+    "Anthropic Claude",
+    "Anthropic AI",
+    "Claude artifacts",
+    "Claude projects",
+    "Claude API",
+    "Claude computer use",
+    # People / accounts
+    "AnthropicAI",
+    "DarioAmodei",
+    "AmandaAskell",
+    # Viral
+    "switched to Claude",
+    "Claude blew my mind",
+    "Claude just",
+]
+
+X_DDG_DELAY = 2.0           # seconds between DDG queries
+X_SYNDICATION_DELAY = 0.5   # seconds between syndication API calls
+X_MAX_RETRIES = 3
 
 # ---------------------------------------------------------------------------
 # Output paths

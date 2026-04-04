@@ -8,6 +8,7 @@ python main.py                          # run all workers
 python main.py --workers reddit         # Reddit only
 python main.py --workers hacker_news    # Hacker News only
 python main.py --workers google_trends  # Google Trends only
+python main.py --workers x              # X (Twitter) only
 """
 
 import argparse
@@ -17,6 +18,7 @@ from datetime import datetime
 
 import config
 from storage.exporter import export_csv, export_json, export_raw
+from workers.reddit_worker import RedditWorker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,10 +29,15 @@ logger = logging.getLogger(__name__)
 
 
 def run_reddit(args) -> None:
-    from workers.reddit_worker import RedditWorker
+    keywords = None if args.no_filter else config.CLAUDE_KEYWORDS
+    target = args.reddit_target
 
-    logger.info("Starting Reddit scraper")
-    worker = RedditWorker()
+    logger.info(f"Starting Reddit scraper -- target={target:,}, filter={'off' if keywords is None else 'on'}")
+    worker = RedditWorker(
+        filter_keywords=keywords,
+        target_total=target,
+        weeks_back=args.reddit_weeks,
+    )
     posts = worker.scrape()
 
     if not posts:
@@ -43,7 +50,9 @@ def run_reddit(args) -> None:
     export_json(posts, f"{config.PROCESSED_DIR}/reddit_{ts}.json")
 
     print(f"\n{'='*50}")
-    print(f"Reddit: {len(posts)} posts collected")
+    print(f"Reddit scrape complete: {len(posts):,} posts")
+    subreddits = set(h for p in posts for h in p.hashtags[:1])
+    print(f"Subreddits ({len(subreddits)}): {', '.join(sorted(subreddits))}")
     top = sorted(posts, key=lambda p: (p.likes or 0) + (p.comments or 0), reverse=True)[:5]
     print("\nTop 5 by score + comments:")
     for i, p in enumerate(top, 1):
@@ -139,7 +148,7 @@ def run_google_trends(args) -> None:
     r_topic   = [p for p in posts if "topic]" in p.post_title]
 
     print(f"\n{'='*50}")
-    print(f"Google Trends: {len(posts)} data points (2024-01-01 → today)")
+    print(f"Google Trends: {len(posts)} data points (2024-01-01 -> today)")
     print(f"  Interest over time : {len(trend)} weekly data points")
     print(f"  Interest by region : {len(region)} country records")
     print(f"  Related queries    : {len(r_query)} entries")
@@ -155,12 +164,62 @@ def run_google_trends(args) -> None:
     print(f"{'='*50}\n")
 
 
+def run_x(args) -> None:
+    from workers.x_scraper.x_worker import XTimelineWorker
+
+    target = args.x_target
+    filter_claude = not args.no_filter
+
+    logger.info(f"Starting X timeline scraper -- target={target:,}, filter_claude={filter_claude}")
+    worker = XTimelineWorker(
+        target_total=target,
+        filter_claude=filter_claude,
+        request_delay=args.x_delay,
+    )
+    total = worker.scrape()
+
+    print(f"\n{'='*50}")
+    print(f"X scrape complete: {total:,} tweets")
+    print(f"Output: data/x_tweets/")
+    print(f"{'='*50}\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Claude Growth Machine Scraper")
     parser.add_argument(
-        "--workers", nargs="+", choices=["reddit", "google_trends", "hacker_news", "youtube"],
-        default=["reddit", "google_trends", "hacker_news", "youtube"],
+        "--workers", nargs="+",
+        choices=["reddit", "google_trends", "hacker_news", "youtube", "x"],
+        default=["reddit", "google_trends", "hacker_news", "youtube", "x"],
         help="Which workers to run (default: all)",
+    )
+    parser.add_argument(
+        "--no-filter",
+        action="store_true",
+        help="Collect all posts, not just Claude-keyword matches",
+    )
+    parser.add_argument(
+        "--reddit-target",
+        type=int,
+        default=1_000_000,
+        help="Reddit: target number of posts to collect (default: 1000000)",
+    )
+    parser.add_argument(
+        "--reddit-weeks",
+        type=int,
+        default=52,
+        help="Reddit: how many weeks back to search (default: 52)",
+    )
+    parser.add_argument(
+        "--x-target",
+        type=int,
+        default=50_000,
+        help="X: target number of tweets to collect (default: 50000)",
+    )
+    parser.add_argument(
+        "--x-delay",
+        type=float,
+        default=1.0,
+        help="X: seconds between API requests (default: 1.0)",
     )
     args = parser.parse_args()
 
@@ -187,6 +246,12 @@ def main():
             run_youtube(args)
         except ImportError:
             logger.warning("YouTube worker not available, skipping.")
+
+    if "x" in args.workers:
+        try:
+            run_x(args)
+        except ImportError:
+            logger.warning("X worker not available, skipping.")
 
 
 if __name__ == "__main__":

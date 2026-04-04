@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python -c ':*)",
+      "Bash(curl -s \"https://arctic-shift.photon-reddit.com/api/posts/search?subreddit=python&limit=1\")",
+      "WebSearch",
+      "Bash(curl -s \"https://arctic-shift.photon-reddit.com/api/posts/search?subreddit=python&limit=auto&sort=asc&after=2024-01-01&before=2024-01-02&fields=id,created_utc,title\")",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('num returned:', len\\(d.get\\('data',[]\\)\\)\\); print\\('last created_utc:', d['data'][-1]['created_utc'] if d.get\\('data'\\) else 'none'\\)\")"
+    ]
+  }
+}
