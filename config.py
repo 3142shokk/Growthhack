@@ -3,21 +3,31 @@ import os
 # ---------------------------------------------------------------------------
 # Threads — target accounts (search requires login, so we target known accounts)
 # ---------------------------------------------------------------------------
-THREADS_TARGET_ACCOUNTS = [
-    # Verified public accounts (private/login-gated ones auto-skipped)
-    "garrytan",       # Garry Tan — YC President, frequent AI takes
-    "karpathy",       # Andrej Karpathy — ex-OpenAI/Tesla, deep AI content
-    "benedictevans",  # Benedict Evans — tech analyst
-    "goodside",       # Riley Goodside — prompt engineering
-    "aibreakfast",    # AI news aggregator
-    "alexalbert__",   # Alex Albert — Anthropic
-    "sama",           # Sam Altman — mentions competitors
-    "swyx",           # Swyx — AI dev community
-    "levelsio",       # Pieter Levels
-    "anthropic",      # Will be skipped (private) — left for documentation
+THREADS_HASHTAGS = [
+    # Claude-specific
+    "claudeai",
+    "claude3",
+    "claudecode",
+    "claudesonnet",
+    "claudeopus",
+    "anthropicai",
+    "anthropic",
+    # Broad AI (Claude posts appear heavily in these)
+    "aitools",
+    "llm",
+    "generativeai",
+    "aiassistant",
+    "artificialintelligence",
+    "chatbot",
+    "machinelearning",
+    "promptengineering",
+    "aicoding",
+    "aidev",
 ]
 
-THREADS_MAX_POSTS_PER_USER = 30
+THREADS_MAX_POSTS_PER_HASHTAG = 80   # posts to collect per hashtag (via scrolling)
+THREADS_SCROLL_ROUNDS = 12           # scrolls per hashtag page (more = more posts)
+THREADS_PARALLEL_HASHTAGS = 4        # concurrent browser contexts
 
 # Keywords used to filter posts on any platform
 CLAUDE_KEYWORDS = [

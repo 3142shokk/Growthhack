@@ -4,24 +4,18 @@ main.py — CLI entrypoint for the Claude Viral Growth Machine scrapers.
 
 Usage
 -----
-# Run all workers
-python main.py
-
-# Run Threads only, no keyword filter
-python main.py --workers threads --no-filter
-
-# Run Threads with custom accounts
-python main.py --workers threads --accounts anthropic alexalbert__
+python main.py                          # run all workers
+python main.py --workers threads        # Threads only
+python main.py --workers reddit         # Reddit only
+python main.py --workers threads --max-discover 100
 """
 
 import argparse
 import logging
-import sys
 from datetime import datetime
 
 import config
 from storage.exporter import export_csv, export_json, export_raw
-from workers.reddit_worker import RedditWorker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,25 +24,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-WORKER_MAP = {
-    "threads": "ThreadsWorker",
-    "reddit": RedditWorker,
-}
-
 
 def run_threads(args) -> None:
     from workers.threads_worker import ThreadsWorker
 
-    accounts = args.accounts or config.THREADS_TARGET_ACCOUNTS
-    keywords = None if args.no_filter else config.CLAUDE_KEYWORDS
-
-    mode = "profile" if args.profile_only else ("discover" if args.discover_only else "both")
-    logger.info(f"Starting Threads scraper — mode={mode}, filter={'off' if keywords is None else 'on'}")
-    worker = ThreadsWorker(usernames=accounts, filter_keywords=keywords, mode=mode, max_discover=args.max_discover)
+    logger.info(f"Starting Threads scraper — hashtags + DDG discover, max_discover={args.max_discover}")
+    worker = ThreadsWorker(max_discover=args.max_discover)
     posts = worker.scrape()
 
     if not posts:
-        logger.warning("No posts collected.")
+        logger.warning("No Threads posts collected.")
         return
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -56,23 +41,21 @@ def run_threads(args) -> None:
     export_csv(posts, f"{config.PROCESSED_DIR}/threads_{ts}.csv")
     export_json(posts, f"{config.PROCESSED_DIR}/threads_{ts}.json")
 
-    # Quick summary
     print(f"\n{'='*50}")
-    print(f"Threads scrape complete: {len(posts)} posts")
-    print(f"Accounts scraped: {', '.join(accounts)}")
-    top = sorted(posts, key=lambda p: (p.likes or 0) + (p.reposts or 0) + (p.comments or 0), reverse=True)[:3]
-    print("\nTop 3 posts by engagement:")
+    print(f"Threads: {len(posts)} posts collected")
+    top = sorted(posts, key=lambda p: (p.likes or 0) + (p.reposts or 0) + (p.comments or 0), reverse=True)[:5]
+    print("\nTop 5 by engagement:")
     for i, p in enumerate(top, 1):
-        print(f"  {i}. @{p.author} | likes={p.likes} reposts={p.reposts} replies={p.comments}")
+        print(f"  {i}. @{p.author} | likes={p.likes} views={p.views}")
         print(f"     {p.post_title[:120]!r}")
     print(f"{'='*50}\n")
 
 
 def run_reddit(args) -> None:
-    keywords = None if args.no_filter else config.CLAUDE_KEYWORDS
+    from workers.reddit_worker import RedditWorker
 
-    logger.info(f"Starting Reddit scraper — filter={'off' if keywords is None else 'on'}")
-    worker = RedditWorker(filter_keywords=keywords)
+    logger.info("Starting Reddit scraper")
+    worker = RedditWorker()
     posts = worker.scrape()
 
     if not posts:
@@ -84,13 +67,10 @@ def run_reddit(args) -> None:
     export_csv(posts, f"{config.PROCESSED_DIR}/reddit_{ts}.csv")
     export_json(posts, f"{config.PROCESSED_DIR}/reddit_{ts}.json")
 
-    # Quick summary
     print(f"\n{'='*50}")
-    print(f"Reddit scrape complete: {len(posts)} posts")
-    subreddits = set(h for p in posts for h in p.hashtags[:1])
-    print(f"Subreddits: {', '.join(sorted(subreddits))}")
+    print(f"Reddit: {len(posts)} posts collected")
     top = sorted(posts, key=lambda p: (p.likes or 0) + (p.comments or 0), reverse=True)[:5]
-    print("\nTop 5 posts by score + comments:")
+    print("\nTop 5 by score + comments:")
     for i, p in enumerate(top, 1):
         print(f"  {i}. r/{p.hashtags[0] if p.hashtags else '?'} | score={p.likes} comments={p.comments}")
         print(f"     {p.post_title[:120]!r}")
@@ -100,49 +80,24 @@ def run_reddit(args) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Claude Growth Machine Scraper")
     parser.add_argument(
-        "--workers",
-        nargs="+",
-        choices=list(WORKER_MAP.keys()),
-        default=list(WORKER_MAP.keys()),
+        "--workers", nargs="+", choices=["threads", "reddit"],
+        default=["threads", "reddit"],
         help="Which workers to run (default: all)",
     )
     parser.add_argument(
-        "--accounts",
-        nargs="+",
-        default=None,
-        help="Threads: override target accounts list",
-    )
-    parser.add_argument(
-        "--no-filter",
-        action="store_true",
-        help="Threads: collect all posts, not just Claude-keyword matches",
-    )
-    parser.add_argument(
-        "--discover-only",
-        action="store_true",
-        help="Threads: only use DDG discovery (posts mentioning Claude from anyone)",
-    )
-    parser.add_argument(
-        "--profile-only",
-        action="store_true",
-        help="Threads: only scrape curated profile list",
-    )
-    parser.add_argument(
-        "--max-discover",
-        type=int,
-        default=60,
-        help="Threads: max posts to scrape in discover mode (default: 60)",
+        "--max-discover", type=int, default=60,
+        help="Threads: max posts from DDG discovery (default: 60)",
     )
     args = parser.parse_args()
 
     if "threads" in args.workers:
-        try:
-            run_threads(args)
-        except ImportError:
-            logger.error("Threads worker requires playwright. Install with: pip install playwright && playwright install chromium")
+        run_threads(args)
 
     if "reddit" in args.workers:
-        run_reddit(args)
+        try:
+            run_reddit(args)
+        except ImportError:
+            logger.warning("Reddit worker not available, skipping.")
 
 
 if __name__ == "__main__":
