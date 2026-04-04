@@ -21,7 +21,7 @@ from datetime import datetime
 
 import config
 from storage.exporter import export_csv, export_json, export_raw
-from workers.threads_worker import ThreadsWorker
+from workers.reddit_worker import RedditWorker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,11 +31,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 WORKER_MAP = {
-    "threads": ThreadsWorker,
+    "threads": "ThreadsWorker",
+    "reddit": RedditWorker,
 }
 
 
 def run_threads(args) -> None:
+    from workers.threads_worker import ThreadsWorker
+
     accounts = args.accounts or config.THREADS_TARGET_ACCOUNTS
     keywords = None if args.no_filter else config.CLAUDE_KEYWORDS
 
@@ -64,6 +67,35 @@ def run_threads(args) -> None:
     print(f"{'='*50}\n")
 
 
+def run_reddit(args) -> None:
+    keywords = None if args.no_filter else config.CLAUDE_KEYWORDS
+
+    logger.info(f"Starting Reddit scraper — filter={'off' if keywords is None else 'on'}")
+    worker = RedditWorker(filter_keywords=keywords)
+    posts = worker.scrape()
+
+    if not posts:
+        logger.warning("No Reddit posts collected.")
+        return
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    export_raw([p.raw_data for p in posts], "reddit", config.RAW_DIR)
+    export_csv(posts, f"{config.PROCESSED_DIR}/reddit_{ts}.csv")
+    export_json(posts, f"{config.PROCESSED_DIR}/reddit_{ts}.json")
+
+    # Quick summary
+    print(f"\n{'='*50}")
+    print(f"Reddit scrape complete: {len(posts)} posts")
+    subreddits = set(h for p in posts for h in p.hashtags[:1])
+    print(f"Subreddits: {', '.join(sorted(subreddits))}")
+    top = sorted(posts, key=lambda p: (p.likes or 0) + (p.comments or 0), reverse=True)[:5]
+    print("\nTop 5 posts by score + comments:")
+    for i, p in enumerate(top, 1):
+        print(f"  {i}. r/{p.hashtags[0] if p.hashtags else '?'} | score={p.likes} comments={p.comments}")
+        print(f"     {p.post_title[:120]!r}")
+    print(f"{'='*50}\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Claude Growth Machine Scraper")
     parser.add_argument(
@@ -87,7 +119,13 @@ def main():
     args = parser.parse_args()
 
     if "threads" in args.workers:
-        run_threads(args)
+        try:
+            run_threads(args)
+        except ImportError:
+            logger.error("Threads worker requires playwright. Install with: pip install playwright && playwright install chromium")
+
+    if "reddit" in args.workers:
+        run_reddit(args)
 
 
 if __name__ == "__main__":

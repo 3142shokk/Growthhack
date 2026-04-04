@@ -29,6 +29,32 @@ CLAUDE_KEYWORDS = [
 COMPETITOR_KEYWORDS = ["chatgpt", "gemini", "copilot", "llama", "gpt-4", "openai"]
 
 # ---------------------------------------------------------------------------
+# Reddit — public JSON API (no auth required)
+# ---------------------------------------------------------------------------
+REDDIT_SUBREDDITS = [
+    "artificial",        # General AI discussion
+    "MachineLearning",   # ML research community
+    "ChatGPT",           # Competitor sub, frequent Claude mentions
+    "ClaudeAI",          # Dedicated Claude subreddit
+    "LocalLLaMA",        # LLM enthusiasts, model comparisons
+    "singularity",       # AI future / hype community
+    "ArtificialInteligence",  # Broad AI sub (note: intentional Reddit spelling)
+]
+
+REDDIT_SEARCH_QUERIES = [
+    "Claude AI",
+    "Claude Anthropic",
+    "Claude Opus",
+    "Claude Sonnet",
+    "Claude vs ChatGPT",
+    "Claude Code",
+    "Anthropic"
+]
+
+REDDIT_REQUEST_DELAY = 1.5   # seconds between paginated requests
+REDDIT_MAX_RETRIES = 3
+
+# ---------------------------------------------------------------------------
 # Output paths
 # ---------------------------------------------------------------------------
 DATA_DIR = "data"
