@@ -1,329 +1,283 @@
 #!/usr/bin/env python3
-"""Render Stage 3 pipeline diagram as a high-res PNG."""
+"""Render automation architecture diagram as a high-res PNG."""
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
-import matplotlib.patheffects as pe
+from matplotlib.patches import FancyBboxPatch
 import numpy as np
 
-# ── colour tokens ──────────────────────────────────────────────────
-BG       = "#07070f"
-BG2      = "#0a0a16"
-BORDER   = "#1a1a2e"
-MUTED    = "#4a4a6a"
-DIM      = "#2a2a4a"
-TEXT     = "#c4c4d0"
-SUBTEXT  = "#6a6a8a"
+# ── palette ────────────────────────────────────────────────────────
+BG        = "#0d1117"
+CARD_BG   = "#161b22"
+BORDER    = "#30363d"
 
-C_INGEST  = "#00b4d8"
-C_PROCESS = "#a855f7"
-C_ROUTER  = "#f59e0b"
-C_RT      = "#ef4444"
-C_SCHED   = "#22c55e"
-C_MEASURE = "#818cf8"
+WHITE     = "#f0f6fc"
+MUTED     = "#8b949e"
+DIM       = "#484f58"
 
-FIG_W, FIG_H = 28, 42
+C_SOURCE  = "#58a6ff"   # blue  — data sources
+C_STORE   = "#3fb950"   # green — storage
+C_PROCESS = "#d2a8ff"   # purple — processing / analysis
+C_DASH    = "#ffa657"   # orange — dashboard / output
+C_ARROW   = "#6e7681"
+
+FIG_W, FIG_H = 26, 20
 DPI = 200
 
 fig, ax = plt.subplots(figsize=(FIG_W, FIG_H), dpi=DPI)
 ax.set_facecolor(BG)
 fig.patch.set_facecolor(BG)
 ax.set_xlim(0, 1)
-ax.set_ylim(0.27, 1.01)  # crop to content
+ax.set_ylim(0, 1)
 ax.axis("off")
 
-# ── dot-grid background ────────────────────────────────────────────
-for x in np.arange(0.01, 1.0, 0.025):
-    for y in np.arange(0.01, 1.0, 0.018):
-        ax.plot(x, y, ".", color="#6366f1", alpha=0.07, markersize=1.2)
-
 # ── helpers ────────────────────────────────────────────────────────
-def rbox(ax, x, y, w, h, color, alpha=0.07, radius=0.008):
-    """Draw a rounded box."""
-    fc = list(plt.matplotlib.colors.to_rgb(color)) + [alpha]
-    ec = list(plt.matplotlib.colors.to_rgb(color)) + [0.5]
-    box = FancyBboxPatch((x, y), w, h,
-                         boxstyle=f"round,pad=0",
-                         facecolor=fc, edgecolor=ec, linewidth=1.2,
-                         transform=ax.transAxes, zorder=3)
-    ax.add_patch(box)
 
-def label(ax, x, y, txt, color, size=9, bold=False, ha="left", va="center", alpha=1.0):
-    weight = "bold" if bold else "normal"
-    ax.text(x, y, txt, color=color, fontsize=size, fontweight=weight,
-            ha=ha, va=va, transform=ax.transAxes, zorder=5, alpha=alpha,
+def box(x, y, w, h, color, alpha_fill=0.12, lw=1.4, radius=0.01):
+    """Rounded rectangle."""
+    import matplotlib.colors as mc
+    rgb = mc.to_rgb(color)
+    fc = (*rgb, alpha_fill)
+    ec = (*rgb, 0.8)
+    p = FancyBboxPatch(
+        (x, y), w, h,
+        boxstyle=f"round,pad=0",
+        facecolor=fc, edgecolor=ec,
+        linewidth=lw,
+        transform=ax.transAxes, clip_on=False, zorder=3,
+    )
+    ax.add_patch(p)
+
+def txt(x, y, s, color=WHITE, size=9, bold=False, ha="left", va="center", alpha=1.0, zorder=5):
+    ax.text(x, y, s,
+            color=color, fontsize=size,
+            fontweight="bold" if bold else "normal",
+            ha=ha, va=va, alpha=alpha,
+            transform=ax.transAxes, clip_on=False, zorder=zorder,
             fontfamily="monospace")
 
-def layer_header(ax, y, n, title, color):
-    ax.axhline(y=y + 0.001, xmin=0.03, xmax=0.97, color=color, alpha=0.15, linewidth=0.8, zorder=2)
-    rbox(ax, 0.03, y - 0.008, 0.025, 0.018, color, alpha=0.2)
-    label(ax, 0.035, y + 0.002, n, color, size=7, bold=True)
-    label(ax, 0.062, y + 0.002, title.upper(), color, size=6.5, alpha=0.7)
+def arrow(x0, y0, x1, y1, color=C_ARROW, label=""):
+    ax.annotate(
+        "", xy=(x1, y1), xytext=(x0, y0),
+        xycoords="axes fraction", textcoords="axes fraction",
+        arrowprops=dict(
+            arrowstyle="-|>", color=color, lw=1.4,
+            mutation_scale=10,
+            connectionstyle="arc3,rad=0.0",
+        ), zorder=4,
+    )
+    if label:
+        mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+        txt(mx + 0.01, my, label, MUTED, size=7, ha="left")
 
-def varrow(ax, x, y_top, y_bot, color, dashed=False, label_txt=None):
-    ls = "--" if dashed else "-"
-    ax.annotate("", xy=(x, y_bot), xytext=(x, y_top),
-                arrowprops=dict(arrowstyle="-|>", color=color, lw=1,
-                                connectionstyle="arc3,rad=0",
-                                mutation_scale=8),
-                xycoords="axes fraction", textcoords="axes fraction", zorder=4)
-    if label_txt:
-        mid = (y_top + y_bot) / 2
-        label(ax, x + 0.01, mid, label_txt, MUTED, size=5.5, ha="left")
+def section_label(x, y, tag, title, color):
+    """Section header badge + title."""
+    box(x, y - 0.006, 0.038, 0.022, color, alpha_fill=0.3, lw=1)
+    txt(x + 0.019, y + 0.005, tag, color, size=8, bold=True, ha="center")
+    txt(x + 0.044, y + 0.005, title.upper(), color, size=8, alpha=0.75)
 
-def node(ax, x, y, w, h, title, color, lines, status="running", freq=None, vol=None):
-    rbox(ax, x, y, w, h, color, alpha=0.08)
-    status_color = C_SCHED if status == "running" else C_ROUTER if status == "triggered" else MUTED
-    # status dot
-    ax.plot(x + 0.012, y + h - 0.012, "o", color=status_color, markersize=3.5,
-            transform=ax.transAxes, zorder=6)
-    # title
-    label(ax, x + 0.025, y + h - 0.012, title, color, size=6, bold=True)
-    # status text
-    label(ax, x + w - 0.01, y + h - 0.012, status.upper(), status_color, size=4.5, ha="right")
-    # freq/vol
-    if freq or vol:
-        info = []
-        if freq: info.append(f"freq {freq}")
-        if vol:  info.append(f"vol {vol}")
-        label(ax, x + 0.025, y + h - 0.024, "  ".join(info), MUTED, size=4.8)
+def node_card(x, y, w, h, color, title, lines, tag=None):
+    """Draw a node card with title + detail lines."""
+    box(x, y, w, h, color, alpha_fill=0.10, lw=1.2)
+    # title bar
+    import matplotlib.colors as mc
+    rgb = mc.to_rgb(color)
+    fc_title = (*rgb, 0.20)
+    p = FancyBboxPatch(
+        (x, y + h - 0.033), w, 0.033,
+        boxstyle="round,pad=0",
+        facecolor=fc_title, edgecolor="none",
+        transform=ax.transAxes, clip_on=False, zorder=4,
+    )
+    ax.add_patch(p)
+    # dot
+    ax.plot(x + 0.012, y + h - 0.0165, "o", color=color,
+            markersize=4, transform=ax.transAxes, zorder=6, clip_on=False)
+    # title text
+    txt(x + 0.026, y + h - 0.0165, title, color, size=7.5, bold=True)
+    if tag:
+        txt(x + w - 0.008, y + h - 0.0165, tag, MUTED, size=6, ha="right")
     # detail lines
-    for i, ln in enumerate(lines):
-        label(ax, x + 0.025, y + h - 0.036 - i * 0.011, ln, SUBTEXT, size=5)
-
+    for i, line in enumerate(lines):
+        txt(x + 0.014, y + h - 0.044 - i * 0.018, line, MUTED, size=6.5, va="top")
 
 # ════════════════════════════════════════════════════════════════════
-# LAYOUT — top to bottom
+# TITLE
 # ════════════════════════════════════════════════════════════════════
+txt(0.5, 0.965, "AUTOMATED GROWTH INTELLIGENCE PIPELINE",
+    WHITE, size=15, bold=True, ha="center")
+txt(0.5, 0.943, "HackNU 2026  ·  Growth Engineering Track  ·  5 sources  ·  7 analysis modules  ·  Next.js dashboard",
+    MUTED, size=8.5, ha="center")
 
-# ── HERO TEXT ──────────────────────────────────────────────────────
-ax.text(0.5, 0.978, "AUTOMATED GROWTH INTELLIGENCE PIPELINE",
-        color="white", fontsize=14, fontweight="bold", ha="center", va="center",
-        transform=ax.transAxes, fontfamily="monospace", zorder=5)
-ax.text(0.5, 0.971, "Stage 3  ·  HackNU 2026  ·  Growth Engineering Track",
-        color=MUTED, fontsize=7, ha="center", va="center",
-        transform=ax.transAxes, fontfamily="monospace", zorder=5)
+# divider
+ax.axhline(0.930, xmin=0.03, xmax=0.97, color=BORDER, lw=1, zorder=2)
 
-# status pill
-rbox(ax, 0.35, 0.962, 0.3, 0.013, C_SCHED, alpha=0.08)
-ax.plot(0.365, 0.9685, "o", color=C_SCHED, markersize=3, transform=ax.transAxes, zorder=6)
-label(ax, 0.372, 0.9685, "SYSTEM ONLINE  ·  5 sources  ·  ~2,400 posts/hr  ·  4 exec tracks  ·  4 KPI signals",
-      C_SCHED, size=5.5, ha="left")
-
-# stats row
-for i, (val, lbl) in enumerate([("5","sources"),("~2,400","posts/hr"),("9","archetypes"),
-                                  ("4","platforms"),("2","exec tracks"),("4","kpi signals")]):
-    xi = 0.05 + i * 0.155
-    label(ax, xi, 0.954, val, "white", size=9, bold=True, ha="left")
-    label(ax, xi, 0.947, lbl, MUTED, size=5, ha="left")
-
-# ── L0: SOURCES ────────────────────────────────────────────────────
-L0_Y = 0.898
-layer_header(ax, L0_Y + 0.025, "L0", "Data Sources", C_INGEST)
+# ════════════════════════════════════════════════════════════════════
+# LAYER 0 — DATA SOURCES
+# ════════════════════════════════════════════════════════════════════
+L0_TOP = 0.895
+section_label(0.03, L0_TOP + 0.017, "L0", "Data Sources", C_SOURCE)
 
 sources = [
-    ("REDDIT_SCRAPER",  "60min",  "200/run",  ["r/ClaudeAI · r/HiggsfieldAI", "PRAW · read-only auth", "title·score·flair·author"]),
-    ("HN_WATCHER",      "real-time","top-30", ["Algolia HN API /search_by_date", "trigger: keyword match", "objectID·points·num_comments"]),
-    ("X_SCRAPER",       "60min",  "50/run",   ["GraphQL keyword search", "claude · higgsfield", "id·text·view_count"]),
-    ("YOUTUBE_API",     "daily",  "channel+search", ["YouTube Data v3", "queries: 'claude AI' etc.", "videoId·viewCount·likeCount"]),
-    ("GTRENDS_POLLER",  "weekly", "comparison", ["pytrends · geo: US+GB+IN", "claude vs chatgpt vs higgsfield", "date·interest·index"]),
+    ("REDDIT",        "reddit_worker.py",    ["Arctic Shift API", "r/ClaudeAI, r/anthropic", "score · comments · flair"]),
+    ("HACKER NEWS",   "hackernews_worker.py",["Algolia HN API", "keyword search + comments", "points · comment depth"]),
+    ("X / TWITTER",   "x_worker.py",         ["DuckDuckGo + syndication", "17 search queries", "views · likes · reposts"]),
+    ("YOUTUBE",       "youtube_worker.py",   ["YouTube Data API v3", "channel + keyword search", "views · likes · comments"]),
+    ("GOOGLE TRENDS", "google_trends_worker",["pytrends", "interest over time", "region · related queries"]),
 ]
-node_w = 0.175
-node_h = 0.065
-gap = (1 - 0.06 - node_w * 5) / 4
-for i, (title, freq, vol, lines) in enumerate(sources):
-    nx = 0.03 + i * (node_w + gap)
-    node(ax, nx, L0_Y - 0.045, node_w, node_h, title, C_INGEST, lines, "running", freq, vol)
 
-# arrow L0→L1
-varrow(ax, 0.5, L0_Y - 0.045, L0_Y - 0.072, C_INGEST, label_txt="POST[] → normalize → Post schema")
+card_w = 0.166
+card_h = 0.098
+gap = (0.94 - card_w * 5) / 4
+for i, (title, sub, lines) in enumerate(sources):
+    nx = 0.03 + i * (card_w + gap)
+    node_card(nx, L0_TOP - card_h, card_w, card_h, C_SOURCE, title, lines, tag=sub)
 
-# ── L1: UNIFIED COLLECTOR ──────────────────────────────────────────
-L1_Y = L0_Y - 0.072
-layer_header(ax, L1_Y + 0.026, "L1", "Unified Collector", C_INGEST)
-rbox(ax, 0.03, L1_Y - 0.048, 0.94, 0.058, C_INGEST, alpha=0.07)
-ax.plot(0.042, L1_Y + 0.013, "o", color=C_SCHED, markersize=3.5, transform=ax.transAxes, zorder=6)
-label(ax, 0.055, L1_Y + 0.013, "UNIFIED_COLLECTOR", C_INGEST, size=7, bold=True)
-label(ax, 0.97, L1_Y + 0.013, "RUNNING", C_SCHED, size=4.5, ha="right")
-label(ax, 0.055, L1_Y + 0.003, "freq continuous   vol ~2,400 posts/hr", MUTED, size=5)
-cols = [
-    "input:  raw platform objects from all 5 scrapers",
-    "output: Post[] — pydantic-validated · deduplicated by (platform, id)",
-    "store:  SQLite → posts.db · indexed on (platform, created_at, score)",
-    "dedup:  upsert on primary key · update score + comments on re-scrape",
+# arrows L0 → L1 (5 arrows converging to center)
+arrow_y_top = L0_TOP - card_h
+arrow_y_bot = L0_TOP - card_h - 0.044
+for i in range(5):
+    cx = 0.03 + i * (card_w + gap) + card_w / 2
+    ax.annotate("", xy=(0.5, arrow_y_bot),
+                xytext=(cx, arrow_y_top),
+                xycoords="axes fraction", textcoords="axes fraction",
+                arrowprops=dict(arrowstyle="-|>", color=C_SOURCE, lw=1.1,
+                                mutation_scale=8,
+                                connectionstyle="arc3,rad=0.0"), zorder=4)
+
+# ════════════════════════════════════════════════════════════════════
+# LAYER 1 — STORAGE / RAW DATA
+# ════════════════════════════════════════════════════════════════════
+L1_TOP = L0_TOP - card_h - 0.044
+section_label(0.03, L1_TOP + 0.015, "L1", "Storage", C_STORE)
+
+box(0.03, L1_TOP - 0.068, 0.94, 0.068, C_STORE, alpha_fill=0.07, lw=1.3)
+
+# store sub-boxes
+stores = [
+    ("data/raw/",          ["reddit_progress.json", "hacker_news_*.json", "youtube_*.json", "google_trends_*.json"]),
+    ("data/x_tweets/",    ["tweets_*.jsonl", "DuckDuckGo + syndication", "scraped per query"]),
+    ("data/processed/",   ["reddit_posts.csv", "reddit_comments.csv", "hacker_news_*.csv", "youtube_*.csv"]),
+    ("storage/exporter.py",["export_csv()", "export_json()", "export_raw()", "unified model → Post"]),
 ]
-for i, c in enumerate(cols):
-    label(ax, 0.055, L1_Y - 0.008 - i * 0.01, c, SUBTEXT, size=5)
+sw = (0.94 - 0.06 - 0.03 * 3) / 4
+for i, (title, lines) in enumerate(stores):
+    sx = 0.045 + i * (sw + 0.03)
+    node_card(sx, L1_TOP - 0.062, sw, 0.055, C_STORE, title, lines)
 
-# arrow L1→L2
-varrow(ax, 0.5, L1_Y - 0.048, L1_Y - 0.073, C_PROCESS,
-       label_txt="Post{id, platform, text, score, timestamp}")
+arrow(0.5, L1_TOP - 0.068, 0.5, L1_TOP - 0.068 - 0.038, C_STORE, "normalize · deduplicate · Post schema")
 
-# ── L2: SIGNAL PROCESSING ──────────────────────────────────────────
-L2_Y = L1_Y - 0.073
-layer_header(ax, L2_Y + 0.026, "L2", "Signal Processing", C_PROCESS)
+# ════════════════════════════════════════════════════════════════════
+# LAYER 2 — PROCESSING
+# ════════════════════════════════════════════════════════════════════
+L2_TOP = L1_TOP - 0.068 - 0.038
+section_label(0.03, L2_TOP + 0.015, "L2", "Data Processing", C_PROCESS)
+
 procs = [
-    ("SPIKE_DETECTOR",       "hourly",    "per-platform",  ["z-score vs 4-week rolling avg", "threshold: 2σ above baseline", "output: spike_flag=True + delta%"]),
-    ("ARCHETYPE_CLASSIFIER", "on-ingest", "every post",    ["regex ruleset → 9 classes", "Insider·Controversy·Demo·Story…", "fallback: 'other' if no match"]),
-    ("CASCADE_DETECTOR",     "hourly",    "cross-platform",["compare first-post timestamp", "X_first → top_down", "Reddit_first → bottom_up"]),
-    ("NARRATIVE_MONITOR",    "hourly",    "HN+X trending", ["scan HN front page + X trends", "match: keyword overlap", "flag: 'deepseek'|'regulation'|etc"]),
+    ("process_data.py",      ["Reddit posts + comments", "X tweets cleaner", "Unified all_platforms.csv", "engagement_rate calc"]),
+    ("process_higgsfield.py",["Higgsfield-specific", "YouTube + Reddit + X", "competitor baseline", "scoring normalisation"]),
+    ("fetch_comments.py",    ["Top 10 comments/post", "Reddit comment tree", "score · author · body", "linked to post_id"]),
+    ("models/post.py",       ["Pydantic Post model", "platform · id · title", "likes · views · comments", "published_at · url"]),
 ]
-node_w2 = 0.22
-gap2 = (1 - 0.06 - node_w2 * 4) / 3
-for i, (title, freq, vol, lines) in enumerate(procs):
-    nx = 0.03 + i * (node_w2 + gap2)
-    node(ax, nx, L2_Y - 0.045, node_w2, node_h, title, C_PROCESS, lines, "running", freq, vol)
+pw = (0.94 - 0.03 * 3) / 4
+for i, (title, lines) in enumerate(procs):
+    px = 0.03 + i * (pw + 0.03)
+    node_card(px, L2_TOP - 0.098, pw, 0.090, C_PROCESS, title, lines)
 
-# arrow L2→L3
-varrow(ax, 0.5, L2_Y - 0.045, L2_Y - 0.073, C_ROUTER,
-       label_txt="Signal{archetype, spike, cascade_dir, narrative}")
+arrow(0.5, L2_TOP - 0.098, 0.5, L2_TOP - 0.098 - 0.036, C_PROCESS, "clean CSVs  →  analysis-ready datasets")
 
-# ── L3: ROUTING ENGINE ─────────────────────────────────────────────
-L3_Y = L2_Y - 0.073
-layer_header(ax, L3_Y + 0.026, "L3", "Routing Engine", C_ROUTER)
-rbox(ax, 0.03, L3_Y - 0.08, 0.94, 0.09, C_ROUTER, alpha=0.07)
-label(ax, 0.055, L3_Y + 0.010, "● PLATFORM × ARCHETYPE ROUTER", C_ROUTER, size=7, bold=True)
-label(ax, 0.97, L3_Y + 0.010, "decision engine · 9 archetypes × 4 platforms", MUTED, size=5, ha="right")
+# ════════════════════════════════════════════════════════════════════
+# LAYER 3 — ANALYSIS
+# ════════════════════════════════════════════════════════════════════
+L3_TOP = L2_TOP - 0.098 - 0.036
+section_label(0.03, L3_TOP + 0.015, "L3", "Analysis Engine  (analysis/run_all.py)", C_PROCESS)
 
-rules_l = [
-    ("archetype = capability_demo",  "→ HN first, then YouTube",         ["HN","YT"]),
-    ("archetype = insider_reveal",   "→ cascade trigger: all platforms",  ["X","HN","R"]),
-    ("archetype = controversy",      "→ X + Reddit simultaneous",         ["X","R"]),
-    ("archetype = model_release",    "→ HN priority (242 avg pts)",       ["HN","X"]),
+modules = [
+    ("M1 Timeline",      ["Weekly engagement", "Reddit growth curve", "Viral moment spikes"]),
+    ("M2 Archetypes",    ["9 content classes", "regex classifier", "avg score per archetype"]),
+    ("M3 Engagement",    ["Flair breakdown", "X views vs likes", "Timing heatmap"]),
+    ("M4 Cascade",       ["Cross-platform lag", "X→HN→Reddit order", "event windows"]),
+    ("M5 Amplifiers",    ["Top X accounts", "Official vs community", "Engagement efficiency"]),
+    ("M6 Copy Patterns", ["Emotional triggers", "Title length lift", "Opening word lift"]),
+    ("M7 Competition",   ["Competitor mention lift", "Timeline vs rivals", "View boost"]),
 ]
-rules_r = [
-    ("archetype = personal_story",   "→ X first (395k avg views)",        ["X"]),
-    ("archetype = third_party",      "→ X priority (533k avg views)",     ["X","HN"]),
-    ("spike_flag = True",            "→ real-time track + amplifier DM",  ["A"]),
-    ("narrative != None",            "→ insert into live news cycle",     ["X"]),
+
+mw = (0.94 - 0.03 * 6) / 7
+for i, (title, lines) in enumerate(modules):
+    mx = 0.03 + i * (mw + 0.03)
+    node_card(mx, L3_TOP - 0.092, mw, 0.085, C_PROCESS, title, lines)
+
+# arrows from analysis to outputs (fan out)
+ana_y_bot = L3_TOP - 0.092
+output_y = ana_y_bot - 0.045
+# left arrow to charts
+ax.annotate("", xy=(0.20, output_y),
+            xytext=(0.35, ana_y_bot),
+            xycoords="axes fraction", textcoords="axes fraction",
+            arrowprops=dict(arrowstyle="-|>", color=C_DASH, lw=1.2,
+                            mutation_scale=9,
+                            connectionstyle="arc3,rad=0.0"), zorder=4)
+# center arrow to playbook
+ax.annotate("", xy=(0.50, output_y),
+            xytext=(0.50, ana_y_bot),
+            xycoords="axes fraction", textcoords="axes fraction",
+            arrowprops=dict(arrowstyle="-|>", color=C_DASH, lw=1.2,
+                            mutation_scale=9), zorder=4)
+# right arrow to dashboard
+ax.annotate("", xy=(0.80, output_y),
+            xytext=(0.65, ana_y_bot),
+            xycoords="axes fraction", textcoords="axes fraction",
+            arrowprops=dict(arrowstyle="-|>", color=C_DASH, lw=1.2,
+                            mutation_scale=9,
+                            connectionstyle="arc3,rad=0.0"), zorder=4)
+
+# ════════════════════════════════════════════════════════════════════
+# LAYER 4 — OUTPUTS
+# ════════════════════════════════════════════════════════════════════
+L4_TOP = output_y
+section_label(0.03, L4_TOP + 0.012, "L4", "Outputs", C_DASH)
+
+outputs = [
+    (0.03,  0.30, "data/charts/  (28 PNGs)",
+     ["1a weekly_engagement_timeline", "2a archetype_avg_score", "3d viral_timing_heatmap",
+      "4b lead_lag_correlation", "5a x_amplifiers", "6a emotional_triggers", "7a competitor_lift"]),
+    (0.38,  0.24, "VIRAL_PLAYBOOK.md",
+     ["Executive summary", "8 viral templates + examples", "Platform sequencing strategy",
+      "Amplifier tier list", "Copy formula + timing rules"]),
+    (0.67,  0.30, "Next.js Dashboard  (dashboard/)",
+     ["/ Home · findings summary", "/analysis  · 7-module charts", "/compare  · competitor grids",
+      "/pipeline · architecture view", "/playbook  · rendered playbook"]),
 ]
-for i, (cond, out, plat) in enumerate(rules_l):
-    y = L3_Y - 0.002 - i * 0.018
-    label(ax, 0.05, y, "IF", MUTED, size=5)
-    label(ax, 0.065, y, cond, SUBTEXT, size=5.2)
-    label(ax, 0.28, y, out, TEXT, size=5.2)
-    for j, p in enumerate(plat):
-        rbox(ax, 0.47 + j * 0.025, y - 0.006, 0.022, 0.013, C_MEASURE, alpha=0.25)
-        label(ax, 0.481 + j * 0.025, y + 0.0005, p, C_MEASURE, size=4.5, ha="left")
-for i, (cond, out, plat) in enumerate(rules_r):
-    y = L3_Y - 0.002 - i * 0.018
-    label(ax, 0.55, y, "IF", MUTED, size=5)
-    label(ax, 0.565, y, cond, SUBTEXT, size=5.2)
-    label(ax, 0.77, y, out, TEXT, size=5.2)
-    for j, p in enumerate(plat):
-        rbox(ax, 0.955 + j * 0.025 - len(plat)*0.025 + j*0.001, y - 0.006, 0.022, 0.013, C_MEASURE, alpha=0.25)
-        label(ax, 0.966 + j * 0.025 - len(plat)*0.025 + j*0.001, y + 0.0005, p, C_MEASURE, size=4.5, ha="left")
 
-label(ax, 0.05, L3_Y - 0.074, "ELSE → scheduled_track · add to weekly content calendar · assign copy formula (opening_word + length_target)",
-      MUTED, size=4.8)
+for ox, ow, title, lines in outputs:
+    node_card(ox, L4_TOP - 0.095, ow, 0.088, C_DASH, title, lines)
 
-# ── TRACK SPLIT ────────────────────────────────────────────────────
-split_y = L3_Y - 0.08
-# center line down
-ax.plot([0.5, 0.5], [split_y, split_y - 0.012], color=DIM, lw=1, transform=ax.transAxes, zorder=4)
-# horizontal bar
-ax.plot([0.22, 0.78], [split_y - 0.012, split_y - 0.012], color=DIM, lw=1, transform=ax.transAxes, zorder=4)
-# left branch
-ax.annotate("", xy=(0.22, split_y - 0.028), xytext=(0.22, split_y - 0.012),
-            arrowprops=dict(arrowstyle="-|>", color=C_RT, lw=1, mutation_scale=7),
-            xycoords="axes fraction", textcoords="axes fraction", zorder=4)
-# right branch
-ax.annotate("", xy=(0.78, split_y - 0.028), xytext=(0.78, split_y - 0.012),
-            arrowprops=dict(arrowstyle="-|>", color=C_SCHED, lw=1, mutation_scale=7),
-            xycoords="axes fraction", textcoords="axes fraction", zorder=4)
-label(ax, 0.22, split_y - 0.006, "SPIKE RESPONSE", C_RT, size=5.5, ha="center")
-label(ax, 0.78, split_y - 0.006, "SCHEDULED INTEL", C_SCHED, size=5.5, ha="center")
-
-# ── L4: TWO TRACKS ─────────────────────────────────────────────────
-L4_Y = split_y - 0.028
-layer_header(ax, L4_Y + 0.026, "L4", "Execution Tracks", "#6b7280")
-
-track_h = 0.125
-# Track A box
-rbox(ax, 0.03, L4_Y - track_h, 0.44, track_h, C_RT, alpha=0.07)
-ax.plot(0.042, L4_Y + 0.011, "o", color=C_RT, markersize=3.5, transform=ax.transAxes, zorder=6)
-label(ax, 0.055, L4_Y + 0.011, "Track A  ·  Spike Response", C_RT, size=6.5, bold=True)
-steps_a = [
-    ("T+0min",  "BRIEF_GEN",       "generate brief: platform, archetype, copy formula (70–130 chars)"),
-    ("T+15min", "AMPLIFIER_ALERT", "Slack/DM to active creators + 4 film creators · include asset"),
-    ("T+30min", "OFFICIAL_POST",   "X post · optimal time: Tue–Thu 14:00–19:00 UTC"),
-    ("T+90min", "HN_SUBMIT",       "DM adocomplete / meetpateltech · 1-sentence pitch + link"),
-    ("T+4hr",   "REDDIT_SEED",     "personal-story version to r/HiggsfieldAI first · r/aivideo day+1"),
-    ("T+8hr",   "X_WAVE_2",        "thread replies · quote-tweets · engagement monitoring"),
+# ════════════════════════════════════════════════════════════════════
+# LEGEND
+# ════════════════════════════════════════════════════════════════════
+lx, ly = 0.03, 0.030
+legend_items = [
+    (C_SOURCE,  "Data Sources / Scrapers"),
+    (C_STORE,   "Storage / Raw & Processed"),
+    (C_PROCESS, "Processing & Analysis"),
+    (C_DASH,    "Outputs & Dashboard"),
 ]
-for i, (step, lbl, detail) in enumerate(steps_a):
-    y = L4_Y - 0.004 - i * 0.019
-    label(ax, 0.05, y, step, C_RT, size=5, ha="left")
-    label(ax, 0.115, y, lbl, TEXT, size=5.5, bold=True)
-    label(ax, 0.115, y - 0.01, detail, SUBTEXT, size=4.8)
+for i, (color, label) in enumerate(legend_items):
+    ex = lx + i * 0.20
+    ax.plot(ex, ly, "s", color=color, markersize=8,
+            transform=ax.transAxes, zorder=5, clip_on=False)
+    txt(ex + 0.016, ly, label, MUTED, size=7, va="center")
 
-# Track B box
-rbox(ax, 0.53, L4_Y - track_h, 0.44, track_h, C_SCHED, alpha=0.07)
-ax.plot(0.542, L4_Y + 0.011, "o", color=C_SCHED, markersize=3.5, transform=ax.transAxes, zorder=6)
-label(ax, 0.555, L4_Y + 0.011, "Track B  ·  Scheduled Intelligence", C_SCHED, size=6.5, bold=True)
-steps_b = [
-    ("Sun", "WEEKLY_DIGEST",    "top archetypes · score dist · competitor mentions · trend deltas"),
-    ("Mon", "CONTENT_CALENDAR", "5 content briefs for the week · platform assignments · openers"),
-    ("Mon", "ARCHETYPE_AUDIT",  "% Insider + Controversy in 30d · alert if below 20% target"),
-    ("Tue", "COMMUNITY_SEED",   "3 posts to r/HiggsfieldAI · weekly challenge · filmmaker spotlight"),
-    ("Thu", "HN_OPPORTUNITY",   "scan Claude HN stories without Higgsfield counterpart"),
-    ("Fri", "FLYWHEEL_REPORT",  "owned ratio · amplifier idx · archetype mix · view floor · Slack"),
-]
-for i, (step, lbl, detail) in enumerate(steps_b):
-    y = L4_Y - 0.004 - i * 0.019
-    label(ax, 0.545, y, step, C_SCHED, size=5, ha="left")
-    label(ax, 0.59, y, lbl, TEXT, size=5.5, bold=True)
-    label(ax, 0.59, y - 0.01, detail, SUBTEXT, size=4.8)
-
-# ── TRACK MERGE ────────────────────────────────────────────────────
-merge_y = L4_Y - track_h
-ax.plot([0.22, 0.22], [merge_y, merge_y - 0.012], color=C_RT, lw=1, ls="--", transform=ax.transAxes, zorder=4)
-ax.plot([0.78, 0.78], [merge_y, merge_y - 0.012], color=C_SCHED, lw=1, ls="--", transform=ax.transAxes, zorder=4)
-ax.plot([0.22, 0.78], [merge_y - 0.012, merge_y - 0.012], color=DIM, lw=1, transform=ax.transAxes, zorder=4)
-ax.annotate("", xy=(0.5, merge_y - 0.028), xytext=(0.5, merge_y - 0.012),
-            arrowprops=dict(arrowstyle="-|>", color=DIM, lw=1, mutation_scale=7),
-            xycoords="axes fraction", textcoords="axes fraction", zorder=4)
-
-# ── L5: FLYWHEEL MEASUREMENT ───────────────────────────────────────
-L5_Y = merge_y - 0.028
-layer_header(ax, L5_Y + 0.026, "L5", "Flywheel Measurement", C_MEASURE)
-metrics = [
-    ("OWNED_RATIO",     "weekly",  "per platform",  ["r/HiggsfieldAI ÷ total Reddit", "current: ~3% · target: >50%", "alert: if ratio drops WoW"]),
-    ("AMPLIFIER_INDEX", "weekly",  "X accounts",    ["# voices with >100k followers", "current: 1 · target: ≥5", "decay: weight recent posts higher"]),
-    ("ARCHETYPE_MIX",   "weekly",  "30d window",    ["% Insider + Controversy total", "current: ~0% · target: >20%", "source: classifier output"]),
-    ("VIEW_FLOOR",      "monthly", "trailing 3mo",  ["lowest monthly X view total", "current: ~5M · target: >20M", "floor not peak — structural reach"]),
-]
-node_w5 = 0.22
-gap5 = (1 - 0.06 - node_w5 * 4) / 3
-for i, (title, freq, vol, lines) in enumerate(metrics):
-    nx = 0.03 + i * (node_w5 + gap5)
-    node(ax, nx, L5_Y - 0.065, node_w5, node_h, title, C_MEASURE, lines, "idle", freq, vol)
-
-# feedback loop annotation
-fb_y = L5_Y - 0.065 - 0.01
-rbox(ax, 0.03, fb_y - 0.022, 0.94, 0.022, C_MEASURE, alpha=0.05)
-# recycl icon (simple circle arrow text)
-label(ax, 0.05, fb_y - 0.010, "↺", C_MEASURE, size=9, bold=True)
-label(ax, 0.07, fb_y - 0.009,
-      "feedback loop — L5 metrics update L2 baselines weekly. rising owned_ratio lowers spike_threshold for r/HiggsfieldAI.",
-      C_MEASURE, size=5.2)
-label(ax, 0.07, fb_y - 0.018,
-      "rising view_floor raises cascade priority score. the pipeline self-calibrates.",
-      C_MEASURE, size=5.2)
-
-# ── FOOTER ─────────────────────────────────────────────────────────
-ax.axhline(y=0.015, xmin=0.03, xmax=0.97, color=BORDER, linewidth=0.7, zorder=2)
-label(ax, 0.05, 0.008, "HackNU 2026  ·  Stage 3  ·  Automated Intelligence Pipeline",
-      MUTED, size=5.5)
-label(ax, 0.97, 0.008, "L0 → L1 → L2 → L3 → L4a | L4b → L5 → ↺",
-      MUTED, size=5.5, ha="right")
+# footer line
+ax.axhline(0.048, xmin=0.03, xmax=0.97, color=BORDER, lw=0.8, zorder=2)
+txt(0.97, 0.030, "growthhack  ·  HackNU 2026  ·  L0→L1→L2→L3→L4",
+    DIM, size=7, ha="right")
 
 # ── SAVE ───────────────────────────────────────────────────────────
 out = "/Users/alemzhanakhmetzhanov/Desktop/projects/growthhack/dashboard/public/pipeline_diagram.png"
-plt.tight_layout(pad=0)
+plt.tight_layout(pad=0.5)
 plt.savefig(out, dpi=DPI, bbox_inches="tight", facecolor=BG, edgecolor="none")
 plt.close()
 print(f"Saved → {out}")

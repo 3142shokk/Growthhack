@@ -30,21 +30,24 @@ Counter-playbook doc: `docs/Higgsfield_Counter_Playbook.docx`
 | Reddit (Higgsfield) | ~2,094 | r/HiggsfieldAI via PRAW |
 | YouTube | ~3k | YouTube Data API v3 |
 | Google Trends | ~500 | pytrends, weekly index |
-| X (Twitter) | 0 | See note below |
+| X (Twitter) | ~2,127 | Official timelines only (AnthropicAI, etc.) — see note below |
 | Threads | 0 | See note below |
 
-**Total: ~197k rows** — `data/processed/full_dataset (1).csv`
+**Total: ~197k rows** — `data/processed/full_dataset (1).csv`  
+X tweets separately: `data/processed/x_tweets.csv` (~2,127 rows)
 
-### X (Twitter) — Not Collected
+### X (Twitter) — Partial
 
-Multiple approaches were attempted:
+~2,127 posts collected from official timelines (AnthropicAI, ClaudeAI, etc.) via tweepy.
+
+Broader keyword/hashtag search was not possible:
 
 - `snscrape` — deprecated; no longer returns results for search queries
-- `tweepy` v2 Free tier — search endpoint requires Basic tier ($100/mo); free tier only allows posting, not search
+- `tweepy` v2 Free tier — search endpoint requires Basic tier ($100/mo); only official timeline access worked
 - Unofficial scraper (playwright cookie session) — blocked by X bot detection after a few requests
-- `x_scraper/` directory contains the abandoned attempt
+- `x_scraper/` directory contains the abandoned search scraping attempt
 
-X data was not included in the final dataset. Top X posts (EHuanglu, AnthropicAI) were manually identified and referenced in the analysis.
+Top amplifier posts (EHuanglu, karpathy, etc.) were manually identified and referenced in the analysis.
 
 ### Threads — Not Collected
 
@@ -196,7 +199,7 @@ Full analysis: dashboard `/compare` and `/analysis` pages, or `docs/Higgsfield_C
 ## Tradeoffs
 
 - **Monolith over microservices** — 24-hour constraint; one repo, one process
-- **No X data** — Free API tier blocks search; manual reference used instead
+- **Limited X data** — Free API tier only allows official timeline access (~2,127 posts); keyword/hashtag search requires paid tier
 - **No Threads data** — API access requires Meta app review; not feasible in hackathon timeframe
 - **SQLite not PostgreSQL** — Dev-only; `storage/database.py` has a Postgres migration path documented
 - **Static dashboard** — Data is embedded in TypeScript constants, not served from a live database; fast to ship, not real-time
