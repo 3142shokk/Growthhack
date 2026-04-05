@@ -1,16 +1,10 @@
 """
-youtube_worker.py — comprehensive YouTube scraper via yt-dlp (no API key).
+youtube_worker.py — YouTube scraper via official Data API v3.
 
-Three-pronged strategy to capture every video about Claude:
-  1. Search queries (relevance-sorted)
-  2. Search queries (date-sorted)
-  3. Channel scraping — Anthropic's official channel
+Uses search.list to find videos, then videos.list to get full stats.
+Quota: 10,000 units/day. search.list = 100 units, videos.list = 1 unit.
 
-Cookie handling: tries Chrome cookies first, falls back to no cookies
-if macOS blocks access. For best results grant Terminal Full Disk Access
-in System Settings → Privacy & Security → Full Disk Access.
-
-Writes raw data progressively to disk as each video is processed.
+Reads API key from .env file (youtube_API=...).
 """
 
 from __future__ import annotations
@@ -18,21 +12,25 @@ from __future__ import annotations
 import json
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
-from urllib.parse import quote
 
-import yt_dlp
+from dotenv import load_dotenv
+from googleapiclient.discovery import build
 
 from models.post import Post
 from workers.base import BaseWorker
 
+load_dotenv()
+
 logger = logging.getLogger(__name__)
 
 SEARCH_QUERIES = [
+    # Core
     "claude ai",
     "anthropic claude",
+    "anthropic ai",
     "claude sonnet",
     "claude opus",
     "claude haiku",
@@ -40,29 +38,55 @@ SEARCH_QUERIES = [
     "claude 3.5",
     "claude 3.7",
     "claude 4",
+    # Features
     "claude code",
     "claude computer use",
     "claude artifacts",
     "claude mcp",
     "claude api",
     "claude projects",
+    "claude canvas",
+    "claude prompt engineering",
+    "claude system prompt",
+    "claude extended thinking",
+    "claude max plan",
+    "claude pro",
+    # Comparisons
     "claude vs chatgpt",
     "claude vs gpt4",
     "claude vs gemini",
-    "best ai coding assistant claude",
+    "claude vs deepseek",
+    "claude vs copilot",
+    "claude vs cursor",
+    "chatgpt vs claude coding",
+    "best ai for coding claude",
+    "best ai assistant claude",
+    # Tutorials / reviews
     "claude ai tutorial",
     "claude ai review",
+    "claude ai beginner",
+    "how to use claude",
+    "claude ai tips",
+    "claude ai for developers",
+    "claude ai for writing",
+    # People / company
     "anthropic ai model",
-    "claude prompt engineering",
-    "claude canvas",
+    "dario amodei",
+    "anthropic safety",
+    "anthropic funding",
+    # Use cases
+    "claude ai coding",
+    "claude ai data analysis",
+    "claude ai automation",
+    "build app with claude",
+    "claude ai workflow",
+    "claude cursor ide",
+    "claude windsurf",
+    "claude cline",
 ]
 
-CHANNEL_URLS = [
-    "https://www.youtube.com/@AnthropicAI/videos",
-]
-
-MAX_SEARCH_PER_QUERY = 1000
-WORKERS = 10
+MAX_RESULTS_PER_QUERY = 50  # max allowed by API per page
+MAX_PAGES_PER_SEARCH = 1    # limit pagination to save quota (1 page = 50 results)
 
 
 class YouTubeWorker(BaseWorker):
@@ -71,163 +95,194 @@ class YouTubeWorker(BaseWorker):
     def __init__(
         self,
         queries: list[str] | None = None,
-        channel_urls: list[str] | None = None,
-        max_search_per_query: int = MAX_SEARCH_PER_QUERY,
+        channel_urls: list[str] | None = None,  # kept for interface compat
+        max_search_per_query: int = 200,
         fetch_comments: bool = False,
     ):
         self.queries = queries or SEARCH_QUERIES
-        self.channel_urls = channel_urls or CHANNEL_URLS
         self.max_search_per_query = max_search_per_query
-        self.fetch_comments = fetch_comments
-
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
+        api_key = os.getenv("youtube_API")
+        if not api_key:
+            raise RuntimeError("youtube_API not found in .env")
+        self._youtube = build("youtube", "v3", developerKey=api_key)
 
     def scrape(self, raw_path: str | None = None) -> list[Post]:
-        seen: set[str] = set()
-        videos: list[Post] = []
-        done = 0
+        progress_path = os.path.join(
+            os.path.dirname(raw_path or "data/raw/yt.json"),
+            "youtube_progress.json",
+        )
 
+        # Load previous progress
+        videos: list[Post] = []
+        done_ids: set[str] = set()
+        if os.path.exists(progress_path):
+            try:
+                with open(progress_path, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+                for item in saved:
+                    done_ids.add(item.get("id", "").replace("yt_video_", ""))
+                    videos.append(Post(**item))
+                logger.info(f"[yt] Resuming: {len(done_ids)} already fetched")
+            except Exception:
+                pass
+
+        # 1. Collect video IDs via search
+        all_video_ids: list[str] = []
+        seen: set[str] = set(done_ids)
+
+        for order in ("relevance", "date"):
+            for query in self.queries:
+                ids = self._search_videos(query, order=order)
+                added = 0
+                for vid_id in ids:
+                    if vid_id not in seen:
+                        seen.add(vid_id)
+                        all_video_ids.append(vid_id)
+                        added += 1
+                if added > 0:
+                    logger.info(f"[yt] {order} '{query}' → +{added} new (total queue: {len(all_video_ids)})")
+
+        logger.info(f"[yt] New videos to fetch details: {len(all_video_ids)}")
+
+        # 2. Fetch video details in batches of 50
         raw_file = None
+        first_entry = len(done_ids) == 0
         if raw_path:
             os.makedirs(os.path.dirname(raw_path), exist_ok=True)
-            raw_file = open(raw_path, "w", encoding="utf-8")
-            logger.info(f"[yt] Streaming raw data (NDJSON) → {raw_path}")
-
-        def _process_batch(ids: list[str], label: str, pool: ThreadPoolExecutor) -> None:
-            nonlocal done
-            new_ids = []
-            for vid_id in ids:
-                if vid_id not in seen:
-                    seen.add(vid_id)
-                    new_ids.append(vid_id)
-            logger.info(f"[yt] {label} → +{len(new_ids)} new (total seen: {len(seen)})")
-            futures = {pool.submit(self._fetch_video, vid_id): vid_id for vid_id in new_ids}
-            for future in as_completed(futures):
-                done += 1
-                try:
-                    v = future.result()
-                except Exception as e:
-                    logger.debug(f"[yt] future error: {e}")
-                    continue
-                if v:
-                    videos.append(v)
-                    if raw_file and v.raw_data:
-                        raw_file.write(json.dumps(v.raw_data, ensure_ascii=False, default=str) + "\n")
-                        raw_file.flush()
-                if done % 100 == 0:
-                    logger.info(f"[yt] {done} processed — {len(videos)} videos saved")
+            mode = "a" if done_ids else "w"
+            raw_file = open(raw_path, mode, encoding="utf-8")
+            if not done_ids:
+                raw_file.write("[\n")
 
         try:
-            with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-                for query in self.queries:
-                    _process_batch(self._search_relevance(query), f"relevance '{query}'", pool)
-                for query in self.queries:
-                    _process_batch(self._search_by_date(query), f"date '{query}'", pool)
-                for ch_url in self.channel_urls:
-                    _process_batch(self._scrape_channel(ch_url), ch_url, pool)
-        finally:
-            if raw_file:
-                raw_file.close()
-                logger.info(f"[yt] Raw file finalised: {raw_path}")
+            for i in range(0, len(all_video_ids), 50):
+                batch = all_video_ids[i:i + 50]
+                batch_posts = self._fetch_video_details(batch)
+
+                for post in batch_posts:
+                    videos.append(post)
+                    if raw_file and post.raw_data:
+                        if not first_entry:
+                            raw_file.write(",\n")
+                        json.dump(post.raw_data, raw_file, ensure_ascii=False, default=str)
+                        raw_file.flush()
+                        first_entry = False
+
+                # Save progress every 200 videos
+                if len(videos) % 200 < 50:
+                    self._save_progress(videos, progress_path)
+
+                logger.info(
+                    f"[yt] Fetched {min(i + 50, len(all_video_ids))}/{len(all_video_ids)} "
+                    f"— {len(videos)} total videos"
+                )
+                time.sleep(0.5)
+
+        except KeyboardInterrupt:
+            logger.info(f"[yt] Interrupted! Saving {len(videos)} videos...")
+
+        self._save_progress(videos, progress_path)
+
+        if raw_file:
+            raw_file.write("\n]")
+            raw_file.close()
 
         logger.info(f"[yt] Done: {len(videos)} videos")
         return videos
 
     # ------------------------------------------------------------------
-    # ID collection (no cookies needed for search)
+    # Search
     # ------------------------------------------------------------------
 
-    def _search_relevance(self, query: str) -> list[str]:
-        return self._extract_ids(f"ytsearch{self.max_search_per_query}:{query}")
+    def _search_videos(self, query: str, order: str = "relevance") -> list[str]:
+        """Search YouTube and return video IDs. Pages through results."""
+        video_ids: list[str] = []
+        page_token = None
+        pages = 0
 
-    def _search_by_date(self, query: str) -> list[str]:
-        url = f"https://www.youtube.com/results?search_query={quote(query)}&sp=CAI%3D"
-        return self._extract_ids(url)
-
-    def _scrape_channel(self, channel_url: str) -> list[str]:
-        return self._extract_ids(channel_url)
-
-    def _extract_ids(self, url: str) -> list[str]:
-        ydl_opts: dict[str, Any] = {
-            "quiet": True,
-            "no_warnings": True,
-            "extract_flat": True,
-            "skip_download": True,
-            "playlistend": self.max_search_per_query,
-        }
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                if not info:
-                    return []
-                if info.get("id") and "entries" not in info:
-                    return [info["id"]]
-                return [e["id"] for e in (info.get("entries") or []) if e and e.get("id")]
-        except Exception as e:
-            logger.warning(f"[yt] ID extraction failed for {url}: {e}")
-            return []
-
-    # ------------------------------------------------------------------
-    # Video details — tries Chrome cookies, falls back to no cookies
-    # ------------------------------------------------------------------
-
-    def _fetch_video(self, video_id: str) -> Optional[Post]:
-        url = f"https://www.youtube.com/watch?v={video_id}"
-        base_opts: dict[str, Any] = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-        }
-        # No cookies — avoids macOS keychain prompts
-        for extra in ({},):
+        while len(video_ids) < self.max_search_per_query and pages < MAX_PAGES_PER_SEARCH:
             try:
-                with yt_dlp.YoutubeDL({**base_opts, **extra}) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                if info:
-                    return self._parse_video(info)
-                return None
-            except PermissionError:
-                continue  # macOS blocked cookie access, try without
-            except yt_dlp.utils.DownloadError as e:
-                msg = str(e).lower()
-                if any(x in msg for x in ("private", "unavailable", "removed", "sign in")):
-                    return None
-                logger.debug(f"[yt] DownloadError {video_id}: {e}")
-                return None
+                request = self._youtube.search().list(
+                    q=query,
+                    part="id",
+                    type="video",
+                    maxResults=min(MAX_RESULTS_PER_QUERY, self.max_search_per_query - len(video_ids)),
+                    pageToken=page_token,
+                    order=order,
+                )
+                response = request.execute()
+
+                for item in response.get("items", []):
+                    vid_id = item.get("id", {}).get("videoId")
+                    if vid_id:
+                        video_ids.append(vid_id)
+
+                page_token = response.get("nextPageToken")
+                pages += 1
+                if not page_token:
+                    break
+
+                time.sleep(0.2)
+
             except Exception as e:
-                logger.debug(f"[yt] Error {video_id}: {e}")
-                return None
-        return None
+                logger.warning(f"[yt] Search error for '{query}': {e}")
+                break
+
+        return video_ids
+
+    # ------------------------------------------------------------------
+    # Video details (batch)
+    # ------------------------------------------------------------------
+
+    def _fetch_video_details(self, video_ids: list[str]) -> list[Post]:
+        """Fetch full details for up to 50 videos in one API call (1 quota unit)."""
+        posts: list[Post] = []
+        try:
+            request = self._youtube.videos().list(
+                id=",".join(video_ids),
+                part="snippet,statistics,contentDetails",
+            )
+            response = request.execute()
+
+            for item in response.get("items", []):
+                post = self._parse_video(item)
+                if post:
+                    posts.append(post)
+
+        except Exception as e:
+            logger.warning(f"[yt] Video details error: {e}")
+
+        return posts
 
     # ------------------------------------------------------------------
     # Parser
     # ------------------------------------------------------------------
 
-    def _parse_video(self, info: dict) -> Optional[Post]:
+    def _parse_video(self, item: dict) -> Optional[Post]:
         try:
-            vid_id   = info.get("id", "")
-            title    = info.get("title", "")
-            channel  = info.get("uploader") or info.get("channel") or "unknown"
-            desc     = (info.get("description") or "")[:2000]
-            tags     = info.get("tags") or []
-            views    = int(info.get("view_count")    or 0)
-            likes    = int(info.get("like_count")    or 0)
-            n_cmts   = int(info.get("comment_count") or 0)
-            duration = info.get("duration_string") or info.get("duration")
-            ud       = info.get("upload_date")  # "YYYYMMDD"
+            vid_id = item["id"]
+            snippet = item.get("snippet", {})
+            stats = item.get("statistics", {})
+            content = item.get("contentDetails", {})
+
+            title = snippet.get("title", "")
+            channel = snippet.get("channelTitle", "unknown")
+            desc = (snippet.get("description") or "")[:2000]
+            tags = snippet.get("tags") or []
+            published = snippet.get("publishedAt", "")
+
+            views = int(stats.get("viewCount", 0))
+            likes = int(stats.get("likeCount", 0))
+            n_cmts = int(stats.get("commentCount", 0))
+            duration = content.get("duration", "")
 
             published_at = None
-            if ud and len(ud) == 8:
+            if published:
                 try:
-                    published_at = datetime(
-                        int(ud[:4]), int(ud[4:6]), int(ud[6:]), tzinfo=timezone.utc
-                    )
+                    published_at = datetime.fromisoformat(published.replace("Z", "+00:00"))
                 except ValueError:
                     pass
 
-            now = datetime.now(tz=timezone.utc)
             return Post(
                 id=f"yt_video_{vid_id}",
                 platform="youtube",
@@ -239,9 +294,9 @@ class YouTubeWorker(BaseWorker):
                 comments=n_cmts,
                 hashtags=tags[:20],
                 description=desc,
-                duration=str(duration) if duration else None,
+                duration=duration,
                 published_at=published_at,
-                scraped_at=now,
+                scraped_at=datetime.now(tz=timezone.utc),
                 raw_data={
                     "type": "video",
                     "video_id": vid_id,
@@ -250,8 +305,8 @@ class YouTubeWorker(BaseWorker):
                     "views": views,
                     "likes": likes,
                     "comment_count": n_cmts,
-                    "duration": str(duration) if duration else None,
-                    "upload_date": ud,
+                    "duration": duration,
+                    "upload_date": published,
                     "tags": tags[:20],
                     "description": desc[:500],
                     "url": f"https://www.youtube.com/watch?v={vid_id}",
@@ -260,3 +315,13 @@ class YouTubeWorker(BaseWorker):
         except Exception as e:
             logger.debug(f"[yt] parse_video failed: {e}")
             return None
+
+    # ------------------------------------------------------------------
+    # Progress
+    # ------------------------------------------------------------------
+
+    def _save_progress(self, videos: list[Post], path: str) -> None:
+        data = [v.model_dump(mode="json") for v in videos]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, default=str, ensure_ascii=False)
+        logger.info(f"[yt] Progress saved: {len(videos)} videos -> {path}")

@@ -55,11 +55,13 @@ class RedditWorker(BaseWorker):
         target_total: int = 1_000_000,
         weeks_back: int = 52,
         filter_keywords: list[str] | None = None,
+        progress_name: str = "reddit_progress.json",
     ):
         self.subreddits = subreddits or config.REDDIT_SUBREDDITS
         self.search_queries = search_queries or config.REDDIT_SEARCH_QUERIES
         self.target_total = target_total
         self.weeks_back = weeks_back
+        self._progress_name = progress_name
         self.filter_keywords = (
             [k.lower() for k in filter_keywords] if filter_keywords
             else [k.lower() for k in config.CLAUDE_KEYWORDS]
@@ -281,7 +283,7 @@ class RedditWorker(BaseWorker):
 
     def _progress_path(self) -> str:
         os.makedirs(config.RAW_DIR, exist_ok=True)
-        return os.path.join(config.RAW_DIR, "reddit_progress.json")
+        return os.path.join(config.RAW_DIR, self._progress_name)
 
     def _save_progress(self) -> None:
         if not self._posts:
