@@ -16,12 +16,12 @@ export default function Hero() {
         </h1>
 
         <p className="mt-6 text-lg leading-relaxed" style={{ color: "var(--muted)" }}>
-          Original analysis from 74,012 Reddit posts, 3,355 HN stories, and 2,127 X tweets.
-          8 data-backed findings on how Claude content goes viral — and what Higgsfield can steal.
+          Original analysis from 197,190 scraped data points across Reddit, HN, X, and YouTube.
+          5 findings on exactly how Claude content goes viral — with the data to prove it.
         </p>
 
         <div className="mt-8 flex flex-wrap gap-3">
-          {["Community dilution", "Cascade architecture", "Platform mismatch", "Amplifier network", "Copy patterns", "Competitive framing"].map((tag) => (
+          {["Threat > launch", "Third-party reach", "Archetype trap", "Copy formula", "MCP signal", "HN power law"].map((tag) => (
             <span
               key={tag}
               className="text-xs px-3 py-1.5 rounded-full border"

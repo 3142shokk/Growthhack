@@ -14,7 +14,7 @@ QUERIES = ["higgsfield", "higgsfield.ai", "higgsfield ai", "higgs field ai", "hi
 TS = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 worker = RedditWorker(
-    subreddits=["Higgsfield_AI", "aivideo", "generativeAI", "singularity", "StableDiffusion", "AItools"],
+    subreddits=["HiggsfieldAI"],
     search_queries=QUERIES,
     target_total=100_000,
     weeks_back=104,

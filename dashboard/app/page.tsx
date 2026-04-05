@@ -27,7 +27,7 @@ export default function Home() {
           <p className="text-xs font-semibold tracking-widest uppercase mb-2" style={{ color: "var(--accent)" }}>
             Original Analysis
           </p>
-          <h2 className="text-3xl font-bold text-white">8 Growth Findings</h2>
+          <h2 className="text-3xl font-bold text-white">5 Growth Findings</h2>
           <p className="mt-2 text-sm" style={{ color: "var(--muted)" }}>
             Every claim is sourced from the dataset. Charts are generated from scraped data, not illustrative.
           </p>
@@ -46,7 +46,7 @@ export default function Home() {
             HackNU 2026 · Growth Engineering Track
           </span>
           <span className="text-xs" style={{ color: "var(--muted)" }}>
-            74,012 Reddit posts · 3,355 HN stories · 2,127 X tweets
+            197,190 total items · 84k Reddit · 107k HN · 2,127 X tweets
           </span>
         </div>
       </footer>
